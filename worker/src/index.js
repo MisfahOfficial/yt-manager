@@ -53,6 +53,7 @@ const ROUTES = [
   ['POST', '/api/admin/devices/:id/approve', adm.approveDevice, [A]],
   ['POST', '/api/admin/devices/:id/revoke', adm.revokeDevice, [A]],
   ['GET', '/api/admin/settings', adm.getSettings, [A]],
+  ['GET', '/api/admin/statuses', adm.statusList, [A]],
   ['POST', '/api/admin/settings', adm.putSettings, [A]],
   ['GET', '/api/admin/network-exceptions', adm.listNetworkExceptions, [A]],
   ['POST', '/api/admin/network-exceptions', adm.createNetworkException, [A]],

@@ -61,6 +61,7 @@ export async function teamOverview(ctx) {
   const { env, now } = ctx;
   const ids = await teamIds(ctx);
   const dayStart = localMidnightMs(localDate(now));
+  const map = await statusMap(env.DB);
   const people = (await env.DB.prepare(`SELECT id,name,role,clickup_user_id FROM employees WHERE id IN (${inList(ids)}) AND (role<>'admin' OR id=?)`).bind(...ids, ctx.emp.id).all()).results;
   const out = [];
   for (const p of people) {
@@ -69,7 +70,7 @@ export async function teamOverview(ctx) {
     const dep = await env.DB.prepare('SELECT COUNT(*) n FROM deposits WHERE employee_id=? AND created_at>=?').bind(p.id, dayStart).first();
     const todayAtt = await env.DB.prepare('SELECT COUNT(*) n FROM attendance WHERE employee_id=? AND check_in_at>=?').bind(p.id, dayStart).first();
     const blocked = p.clickup_user_id ? (await env.DB.prepare(
-      `SELECT t.id,t.name,t.url,t.status FROM tasks t JOIN task_assignees ta ON ta.task_id=t.id WHERE ta.clickup_user_id=? AND ta.end_ms IS NULL AND t.deleted=0 AND lower(t.status) IN ('blocked','on hold')`).bind(p.clickup_user_id).all()).results : [];
+      `SELECT t.id,t.name,t.url,t.status FROM tasks t JOIN task_assignees ta ON ta.task_id=t.id WHERE ta.clickup_user_id=? AND ta.end_ms IS NULL AND t.deleted=0`).bind(p.clickup_user_id).all()).results.filter((t) => classify(t.status, map) === 'paused') : [];
     out.push({
       id: p.id, name: p.name,
       attendance: open ? (open.status === 'open' ? 'checked_in' : 'missing_checkout') : todayAtt.n ? 'done_for_today' : 'not_in',

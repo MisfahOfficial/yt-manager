@@ -3,7 +3,9 @@ import { newPasswordRecord, uuid } from './lib/crypto.js';
 import { tempPassword } from './auth.js';
 import { validIpRule } from './lib/net.js';
 import { isYmd, localDate, localMidnightMs } from './lib/time.js';
-import { rebuildEmployee } from './engine.js';
+import { rebuildEmployee, statusMap } from './engine.js';
+import { classify } from './lib/timer.js';
+import { rebuildLinked } from './clickup.js';
 import { clientIp } from './attendance.js';
 import { teamIds } from './work.js';
 
@@ -187,7 +189,14 @@ export async function putSettings(ctx) {
   if (!stmts.length) throw bad('nothing', 'Nothing to save.');
   stmts.push(auditStmt(env.DB, { at: now, actor: emp.id, action: 'settings_changed', entity: 'settings', before: Object.fromEntries(Object.entries(changed).map(([k, c]) => [k, c.before])), after: Object.fromEntries(Object.entries(changed).map(([k, c]) => [k, c.after])) }));
   await env.DB.batch(stmts);
+  if (changed.status_map) await rebuildLinked(env, now); // new status meanings change recorded time
   return json({ ok: true });
+}
+
+export async function statusList(ctx) {
+  const map = await statusMap(ctx.env.DB);
+  const rows = (await ctx.env.DB.prepare('SELECT lower(status) s, COUNT(*) n FROM tasks WHERE status IS NOT NULL AND deleted=0 GROUP BY lower(status) ORDER BY n DESC').all()).results;
+  return json({ statuses: rows.map((r) => ({ status: r.s, count: r.n, class: classify(r.s, map) })) });
 }
 
 // ---- network outage exception (time-boxed, audited, never silent) ----

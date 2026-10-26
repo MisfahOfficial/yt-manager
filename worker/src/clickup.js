@@ -184,7 +184,7 @@ export async function runSync(env, now, { manual = false, maxPages = PAGES_PER_R
   }
 }
 
-async function rebuildLinked(env, now) {
+export async function rebuildLinked(env, now) {
   const people = (await env.DB.prepare('SELECT id FROM employees WHERE clickup_user_id IS NOT NULL AND active=1').all()).results;
   for (const p of people) await rebuildEmployee(env, p.id, now - 3 * 86400000, now);
 }

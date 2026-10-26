@@ -7,7 +7,7 @@ export const DEFAULT_STATUS_MAP = {
   'in progress': 'active', 'editing': 'active',
   'revisions': 'revision', 'revision': 'revision', 'changes requested': 'revision',
   'blocked': 'paused', 'on hold': 'paused', 'waiting': 'paused',
-  'ready for upload': 'done', 'delivered': 'done', 'complete': 'done', 'closed': 'done', 'uploaded': 'done',
+  'ready for upload': 'done', 'ready to upload': 'done', 'ready to uploading': 'done', 'ready for uploading': 'done', 'rendered': 'done', 'delivered': 'done', 'complete': 'done', 'closed': 'done', 'uploaded': 'done',
 };
 export function classify(status, map = DEFAULT_STATUS_MAP) {
   if (status == null) return 'unknown';

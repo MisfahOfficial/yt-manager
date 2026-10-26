@@ -303,3 +303,33 @@ describe('real-user hints', () => {
     expect(t.unverified_tasks.map((x) => x.id)).toContain('UV');
   });
 });
+
+describe('custom ClickUp status names', () => {
+  it('admin can map "ready to uploading" and recorded time recalculates', async () => {
+    const mon = at(0) + 7 * 24 * H; // next Monday
+    const W = (h, m = 0) => mon + h * H + m * M;
+    setNow(W(18));
+    await env.DB.prepare("DELETE FROM task_assignees WHERE task_id IN ('TA','TB','UV')").run(); // earlier tests left other In Progress tasks: that would (correctly) be ambiguous
+    await env.DB.prepare("INSERT INTO attendance(id,employee_id,request_id,check_in_at,check_out_at,status) VALUES ('att-m',?,'req-m',?,?,'closed')").bind(ali.id, W(9), W(17)).run();
+    await hook(whPayload('taskAssigneeUpdated', 'CS', [item('c0', 'assignee_add', W(8), null, { id: 555 })]));
+    await hook(whPayload('taskStatusUpdated', 'CS', [item('c1', 'status', W(10), { status: 'to do' }, { status: 'in progress' })]));
+    await hook(whPayload('taskStatusUpdated', 'CS', [item('c2', 'status', W(12), { status: 'in progress' }, { status: 'Super Done' })]));
+    let s = (await env.DB.prepare("SELECT start_ms,end_ms FROM task_sessions WHERE task_id='CS'").all()).results;
+    expect(s[0].end_ms).toBe(W(12)); // an unknown status still stops the timer (not In Progress)
+    let d = (await mgr.get('/api/tasks/CS')).data;
+    expect(d.deliveries).toEqual([]);   // ...but is not recorded as a delivery
+    const st = await admin.get('/api/admin/statuses');
+    expect(st.data.statuses.find((x) => x.status === 'super done').class).toBe('other');
+    const save = await admin.post('/api/admin/settings', { status_map: { 'super done': 'done' } });
+    expect(save.status).toBe(200);
+    d = (await mgr.get('/api/tasks/CS')).data;
+    expect(d.deliveries.map((x) => x.kind)).toEqual(['original']);
+    expect((await admin.post('/api/admin/settings', { status_map: { x: 'bogus' } })).status).toBe(400);
+    expect((await ali.get('/api/admin/statuses')).status).toBe(403);
+  });
+  it('built-in names include "ready to uploading"', async () => {
+    const { classify } = await import('../src/lib/timer.js');
+    expect(classify('Ready to Uploading')).toBe('done');
+    expect(classify('rendered')).toBe('done');
+  });
+});

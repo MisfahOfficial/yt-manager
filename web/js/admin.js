@@ -188,8 +188,9 @@ export async function settingsPage(root, me) {
   auto.addEventListener('change', () => save({ auto_reports: auto.checked }));
   const rep = h('section', { class: 'card' }, h('h2', {}, 'Reports'), h('label', { class: 'check' }, auto, ' Prepare the weekly and monthly reports automatically when a period ends'), h('p', { class: 'muted' }, 'Reports are shown in the app only. No daily report is made and nothing is emailed.'));
   const out = h('section', { class: 'card' }, h('h2', {}, 'Imported old records'), h('p', { class: 'muted' }, 'Paste the old app\'s exported data (JSON) to keep its history. Old passwords are never imported.'), importBox());
+  const sm = await statusCard(s.settings.status_map);
   const aud = h('section', { class: 'card' }, h('h2', {}, 'Audit history'), h('p', { class: 'muted' }, 'Every correction, approval and setting change.'), h('a', { class: 'btn', href: '#audit' }, 'Open audit history'));
-  root.replaceChildren(net, outage, cuCard, shiftCard, rep, aud, out);
+  root.replaceChildren(net, outage, cuCard, sm, shiftCard, rep, aud, out);
 }
 function teamPick(teams, onPick) {
   const sel = h('select', {}, teams.map((t) => h('option', { value: t.id }, t.name)));
@@ -219,4 +220,21 @@ export async function auditPage(root) {
   root.replaceChildren(h('section', { class: 'card' }, h('h2', {}, 'Audit history'), h('p', { class: 'muted' }, 'Every correction, approval and setting change. Newest first.'),
     h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['When', 'Who', 'What', 'Before → After', 'Reason'].map((x) => h('th', {}, x)))),
       h('tbody', {}, r.audit.map((a) => h('tr', {}, h('td', {}, fmtDateTime(a.at_ms)), h('td', {}, a.actor_name || '—'), h('td', {}, a.action.replaceAll('_', ' ')), h('td', { class: 'small mono' }, `${short(a.before_json)} → ${short(a.after_json)}`), h('td', {}, a.reason || '')))))))); 
+}
+
+const CLASSES = [['other', 'Not timed'], ['active', 'Timed work (In Progress)'], ['revision', 'Revision work (timed)'], ['paused', 'Blocked / on hold (paused)'], ['done', 'Finished (Ready for Upload)']];
+async function statusCard(overrides) {
+  const card = h('section', { class: 'card' }, h('h2', {}, 'ClickUp status names'),
+    h('p', { class: 'muted' }, 'Tell the app what each of your ClickUp statuses means. Only "Timed work" statuses start the timer; "Finished" stops it and records delivery.'));
+  let r; try { r = await get('/api/admin/statuses'); } catch (e) { card.append(errBox(e)); return card; }
+  if (!r.statuses.length) { card.append(empty('Statuses appear here after the first ClickUp sync.')); return card; }
+  const sels = r.statuses.map((x) => ({ x, el: h('select', {}, CLASSES.map(([v, l]) => h('option', { value: v, selected: v === x.class }, l))) }));
+  card.append(h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['ClickUp status', 'Tasks', 'Means'].map((t) => h('th', {}, t)))),
+    h('tbody', {}, sels.map(({ x, el }) => h('tr', {}, h('td', {}, x.status), h('td', {}, String(x.count)), h('td', {}, el)))))));
+  const b = h('button', { class: 'btn primary', type: 'button' }, 'Save status meanings');
+  b.addEventListener('click', busy(b, async () => {
+    try { await post('/api/admin/settings', { status_map: { ...overrides, ...Object.fromEntries(sels.map(({ x, el }) => [x.status, el.value])) } }); announce('Saved ✓ Recorded time was recalculated.'); } catch (e) { announce(e.message, 'err'); }
+  }));
+  card.append(b);
+  return card;
 }
