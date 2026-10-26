@@ -22,7 +22,7 @@ export async function myTasks(ctx) {
   const rows = (await env.DB.prepare(
     `SELECT t.id,t.name,t.url,t.status,t.priority,t.due_ms FROM tasks t JOIN task_assignees ta ON ta.task_id=t.id
        WHERE ta.clickup_user_id=? AND ta.end_ms IS NULL AND t.deleted=0 ORDER BY t.due_ms IS NULL, t.due_ms LIMIT 200`).bind(emp.clickup_user_id).all()).results;
-  const open = rows.filter((r) => classify(r.status, map) !== 'done');
+  const open = rows.filter((r) => !['done', 'ignore'].includes(classify(r.status, map)));
   return json({ tasks: open.map((r) => ({ ...r, class: classify(r.status, map) })), linked: true });
 }
 

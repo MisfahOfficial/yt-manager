@@ -222,7 +222,7 @@ export async function auditPage(root) {
       h('tbody', {}, r.audit.map((a) => h('tr', {}, h('td', {}, fmtDateTime(a.at_ms)), h('td', {}, a.actor_name || '—'), h('td', {}, a.action.replaceAll('_', ' ')), h('td', { class: 'small mono' }, `${short(a.before_json)} → ${short(a.after_json)}`), h('td', {}, a.reason || '')))))))); 
 }
 
-const CLASSES = [['other', 'Not timed'], ['active', 'Timed work (In Progress)'], ['revision', 'Revision work (timed)'], ['paused', 'Blocked / on hold (paused)'], ['done', 'Finished (Ready for Upload)']];
+const CLASSES = [['other', 'Not timed'], ['active', 'Timed work (In Progress)'], ['revision', 'Revision work (timed)'], ['paused', 'Blocked / on hold (paused)'], ['done', 'Finished (Ready for Upload)'], ['ignore', 'Ignore (not our step, e.g. payment)']];
 async function statusCard(overrides) {
   const card = h('section', { class: 'card' }, h('h2', {}, 'ClickUp status names'),
     h('p', { class: 'muted' }, 'Tell the app what each of your ClickUp statuses means. Only "Timed work" statuses start the timer; "Finished" stops it and records delivery.'));

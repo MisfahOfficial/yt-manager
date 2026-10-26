@@ -68,6 +68,7 @@ export function statusTimeline(events, map = DEFAULT_STATUS_MAP) {
     .slice().sort((a, b) => a.at_ms - b.at_ms || a.id - b.id);
   const out = [];
   for (const e of ev) {
+    if (e.kind === 'status' && classify(e.to_val, map) === 'ignore' && e.note !== 'approx') continue; // e.g. "payment done": someone else's step, must not change the task's work state
     const cls = e.kind === 'deleted' ? 'deleted'
       : e.kind === 'created' ? classify(e.to_val, map)
       : (e.source === 'reconcile' && e.note === 'approx') ? 'unverified' : classify(e.to_val, map);

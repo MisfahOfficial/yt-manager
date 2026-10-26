@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeSessions, statusTimeline, deliveries, applicableDeadline, shiftWindows, intersect, normalize } from '../src/lib/timer.js';
+import { DEFAULT_STATUS_MAP, computeSessions, statusTimeline, deliveries, applicableDeadline, shiftWindows, intersect, normalize } from '../src/lib/timer.js';
 import { localMidnightMs } from '../src/lib/time.js';
 
 const H = 3600000, M = 60000;
@@ -154,5 +154,14 @@ describe('shift windows', () => {
     const late = { shift: { start_min: 14 * 60, end_min: 20 * 60, days_mask: 127 }, effective_from: '2026-10-27', effective_to: null };
     const w = shiftWindows([early, late], [], t(0), t(0) + 2 * 86400000);
     expect(w.map((x) => [x.date, (x.end - x.start) / H])).toEqual([['2026-10-26', 4], ['2026-10-27', 6]]);
+  });
+});
+
+describe('ignored statuses', () => {
+  it('"payment done" after delivery neither undoes the delivery nor creates a new one', () => {
+    const map = { ...DEFAULT_STATUS_MAP, 'payment done': 'ignore' };
+    const E = [ev(1, 'a', t(9), 'In Progress'), ev(2, 'a', t(10), 'Ready for Upload'), ev(3, 'a', t(11), 'payment done'), ev(4, 'a', t(12), 'Uploaded')];
+    expect(deliveries(E, map).map((d) => d.at)).toEqual([t(10)]);
+    expect(statusTimeline(E, map).map((x) => x.status)).toEqual(['In Progress', 'Ready for Upload', 'Uploaded']); // payment done skipped
   });
 });

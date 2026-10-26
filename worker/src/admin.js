@@ -169,7 +169,7 @@ const SETTING_KEYS = {
   sync_time_min: (v) => int(v, 'sync time', { min: 0, max: 1439 }),
   clickup_team_id: (v) => str(String(v), 'workspace', { max: 40 }),
   revisions_status: (v) => (v ? str(v, 'status', { max: 60 }) : null),
-  status_map: (v) => { if (!v || typeof v !== 'object') throw bad('bad_map'); const ok = ['active', 'revision', 'paused', 'done', 'other']; for (const [k, c] of Object.entries(v)) if (!ok.includes(c) || k.length > 60) throw bad('bad_map', 'Status mapping is not valid.'); return Object.fromEntries(Object.entries(v).map(([k, c]) => [k.toLowerCase().trim(), c])); },
+  status_map: (v) => { if (!v || typeof v !== 'object') throw bad('bad_map'); const ok = ['active', 'revision', 'paused', 'done', 'other', 'ignore']; for (const [k, c] of Object.entries(v)) if (!ok.includes(c) || k.length > 60) throw bad('bad_map', 'Status mapping is not valid.'); return Object.fromEntries(Object.entries(v).map(([k, c]) => [k.toLowerCase().trim(), c])); },
   auto_reports: (v) => !!v,
 };
 export async function getSettings(ctx) {
