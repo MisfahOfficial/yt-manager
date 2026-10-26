@@ -1,4 +1,4 @@
-import { h, get, post, field, dialog, busy, announce, chip, empty, errBox, fmtTime, fmtDate, fmtDateTime, fmtDur, toInput, fromInput, todayYmd } from './core.js';
+import { h, get, post, syncUntilDone, field, dialog, busy, announce, chip, empty, errBox, fmtTime, fmtDate, fmtDateTime, fmtDur, toInput, fromInput, todayYmd } from './core.js';
 import { depositItem } from './staff.js';
 
 const ATT = { checked_in: ['Checked in', 'ok'], done_for_today: ['Done for today', ''], not_in: ['Not in yet', 'warn'], missing_checkout: ['Missing check-out', 'bad'] };
@@ -12,7 +12,7 @@ export async function teamPage(root, me) {
   sync.append(h('div', { class: 'row between' },
     h('div', {}, h('strong', {}, 'ClickUp tasks: '), hl.connected ? (hl.last_ok_ms ? `updated ${fmtDateTime(hl.last_ok_ms)}` : 'never updated') : 'not connected', ' ', stale ? chip(hl.last_error ? 'Problem' : 'Out of date', 'warn') : chip('Up to date', 'ok'),
       hl.last_error ? h('div', { class: 'warn-text' }, hl.last_error) : null),
-    (() => { const b = h('button', { class: 'btn', type: 'button' }, 'Sync now'); b.addEventListener('click', busy(b, async () => { try { const r = await post('/api/admin/clickup/sync'); announce(r.ok ? 'ClickUp updated ✓' : r.error || 'Sync did not finish', r.ok ? 'ok' : 'err'); teamPage(root, me); } catch (e) { announce(e.message, 'err'); } })); return b; })()));
+    (() => { const b = h('button', { class: 'btn', type: 'button' }, 'Sync now'); b.addEventListener('click', busy(b, async () => { try { const r = await syncUntilDone((p) => announce(`Updating from ClickUp… (${p * 100} tasks so far)`)); announce(r.ok ? 'ClickUp updated ✓' : r.error || 'Sync did not finish', r.ok ? 'ok' : 'err'); teamPage(root, me); } catch (e) { announce(e.message, 'err'); } })); return b; })()));
   const grid = h('div', { class: 'grid' });
   if (!t.people.length) grid.append(empty('No team members yet.'));
   for (const p of t.people) {

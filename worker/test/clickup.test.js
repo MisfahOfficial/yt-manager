@@ -64,6 +64,7 @@ describe('reconcile', () => {
       if (url.includes('/task/')) return ok(task('x', 'to do'));
       return ok({ tasks: [task('P1', 'to do', [777])], last_page: true });
     });
+    await env.DB.prepare('UPDATE sync_state SET last_ok_ms=NULL').run(); // force a full pass (deletions are only probed on full passes)
     await runSync(e, t0 + 1000, { manual: true });
     const open = (await env.DB.prepare("SELECT clickup_user_id FROM task_assignees WHERE task_id='P1' AND end_ms IS NULL").all()).results.map((r) => r.clickup_user_id);
     expect(open).toEqual(['777']);
@@ -98,6 +99,30 @@ describe('reconcile', () => {
     await env.DB.prepare("DELETE FROM settings WHERE key='clickup_team_id'").run();
     const r = await runSync(mockEnv(() => ok({})), Date.now() + 30000, { manual: true });
     expect(r.error).toMatch(/workspace/i);
+  });
+});
+
+describe('chunked sync', () => {
+  beforeAll(async () => { await env.DB.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES ('clickup_team_id','\"T1\"')").run(); });
+  it('large workspaces are processed a couple of pages per request and resume from a saved cursor', async () => {
+    await env.DB.prepare('UPDATE sync_state SET last_ok_ms=NULL,cursor=NULL,running=0').run();
+    const pageOf = (n) => Array.from({ length: n === 3 ? 20 : 100 }, (_, i) => task(`C${n}-${i}`, 'to do', [555]));
+    const e = mockEnv((url) => { const pg = +/page=(\d+)/.exec(url)[1]; return ok({ tasks: pageOf(pg), last_page: pg === 3 }); });
+    const t = Date.now() + 100000;
+    const r1 = await runSync(e, t, { manual: true });
+    expect(r1).toMatchObject({ ok: true, done: false, pages: 2 });
+    expect(JSON.parse((await env.DB.prepare('SELECT cursor FROM sync_state').first()).cursor).page).toBe(2);
+    const r2 = await runSync(e, t + 1000, { manual: true });
+    expect(r2).toMatchObject({ ok: true, done: true, pages: 2 });
+    const st = await env.DB.prepare('SELECT last_ok_ms,cursor,running,last_error FROM sync_state').first();
+    expect(st).toMatchObject({ cursor: null, running: 0, last_error: null });
+    expect(st.last_ok_ms).toBe(t + 1000);
+  });
+  it('after a good sync the next one is incremental (date_updated_gt, closed tasks included) and does not re-list everything', async () => {
+    const e = mockEnv(() => ok({ tasks: [], last_page: true }));
+    await runSync(e, Date.now() + 200000, { manual: true });
+    expect(calls[0].url).toContain('date_updated_gt=');
+    expect(calls[0].url).toContain('include_closed=true');
   });
 });
 

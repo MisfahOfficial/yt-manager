@@ -285,3 +285,21 @@ describe('reports', () => {
     expect((await admin.get('/api/reports?kind=weekly&period=2026-10-27')).status).toBe(400);
   });
 });
+
+describe('real-user hints', () => {
+  it('network refusal tells the person which address the server saw', async () => {
+    const { Client } = await import('./helpers.js');
+    const home = new Client('198.51.100.77'); home.cookie = ali.cookie; home.keys = ali.keys;
+    const r = await home.post('/api/checkin', { request_id: rid() }, { sign: true });
+    expect(r.data.error.message).toContain('198.51.100.77');
+  });
+  it('a task already In Progress with unknown start is reported to the employee, not silently untimed', async () => {
+    const sun = at(0) + 6 * 24 * H;
+    setNow(sun + 10 * H);
+    await env.DB.prepare("INSERT INTO tasks(id,name,status,first_seen_ms) VALUES ('UV','Old video','in progress',1)").run();
+    await env.DB.prepare("INSERT INTO task_assignees(task_id,clickup_user_id,start_ms,start_known) VALUES ('UV','555',0,0)").run();
+    await env.DB.prepare("INSERT INTO task_events(event_key,task_id,kind,at_ms,received_ms,source,to_val,note) VALUES ('rec:UV',?,?,?,?,?,?,?)").bind('UV', 'status', sun, sun, 'reconcile', 'in progress', 'approx').run();
+    const t = (await ali.get('/api/today')).data;
+    expect(t.unverified_tasks.map((x) => x.id)).toContain('UV');
+  });
+});

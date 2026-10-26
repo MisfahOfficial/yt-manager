@@ -17,7 +17,7 @@ export async function checkNetwork(ctx, employeeId) {
     .bind(ctx.now, ctx.now, employeeId).first();
   if (ex) return { ok: true, exceptionId: ex.id, ip };
   if (!rules.length) throw new HttpError(403, 'network_not_configured', 'Office network is not set up yet. Ask your admin.');
-  throw new HttpError(403, 'not_office_network', 'You can only check in or out from the office network.');
+  throw new HttpError(403, 'not_office_network', `You can only check in or out from the office network. The server sees your address as ${ip || 'unknown'}.`);
 }
 
 async function openAttendance(db, employeeId) {
@@ -46,8 +46,15 @@ export async function today(ctx) {
   const dev = await env.DB.prepare("SELECT status FROM devices WHERE employee_id=? ORDER BY CASE status WHEN 'approved' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END LIMIT 1").bind(emp.id).first();
   let choices = [];
   if (state.ambiguous) choices = (await env.DB.prepare(`SELECT id,name,url FROM tasks WHERE id IN (${state.ambiguous.tasks.map(() => '?').join(',')})`).bind(...state.ambiguous.tasks).all()).results;
+  let unverified = [];
+  if (emp.clickup_user_id) {
+    unverified = (await env.DB.prepare(
+      `SELECT t.id,t.name FROM tasks t JOIN task_assignees ta ON ta.task_id=t.id AND ta.end_ms IS NULL AND ta.clickup_user_id=?
+        WHERE t.deleted=0 AND lower(t.status)='in progress'
+          AND (SELECT note FROM task_events e WHERE e.task_id=t.id AND e.kind='status' ORDER BY e.at_ms DESC,e.id DESC LIMIT 1)='approx'`).bind(emp.clickup_user_id).all()).results;
+  }
   return json({
-    server_time: now, state: open ? 'checked_in' : 'checked_out', attendance: view(open || last),
+    unverified_tasks: unverified, server_time: now, state: open ? 'checked_in' : 'checked_out', attendance: view(open || last),
     deposit_count: dep, active_task: task ? { ...task, kind: state.active.kind, since: state.active.start } : null,
     needs_task_choice: choices, recorded_ms_today: recorded, device_status: dev?.status || 'none',
   });

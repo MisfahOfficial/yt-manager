@@ -62,7 +62,7 @@ export async function login(ctx) {
   if (emp && emp.active) ok = await checkPassword(body.password, emp);
   else await hashPassword(body.password, '00'.repeat(16), +env.PBKDF2_ITER || 100000); // equalise timing
   await env.DB.prepare('INSERT INTO login_attempts(email,at,ok) VALUES (?,?,?)').bind(email, ctx.now, ok ? 1 : 0).run();
-  if (!ok) throw new HttpError(401, 'bad_login', 'Email or password is wrong.');
+  if (!ok) throw new HttpError(401, 'bad_login', 'Email or password is wrong. Use exactly the email your admin entered for you.');
   const tok = randomToken(32);
   const ttl = (+env.SESSION_HOURS || 12) * 3600000;
   await env.DB.batch([

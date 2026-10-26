@@ -92,8 +92,7 @@ export async function processWebhook(env, p, now) {
 }
 
 // task_assignees is derived from events so arrival order cannot corrupt it.
-export async function rebuildAssignees(db, taskId) {
-  const ev = (await db.prepare("SELECT kind,at_ms,to_val,from_val,note FROM task_events WHERE task_id=? AND kind IN ('assignee_add','assignee_rem') ORDER BY at_ms,id").bind(taskId).all()).results;
+function assigneeRows(ev) {
   const open = new Map(); const rows = [];
   for (const e of ev) {
     const uid = e.kind === 'assignee_add' ? e.to_val : e.from_val;
@@ -103,10 +102,21 @@ export async function rebuildAssignees(db, taskId) {
     } else if (open.has(uid)) { open.get(uid).end = e.at_ms; open.delete(uid); }
     else rows.push({ uid, start: 0, end: e.at_ms, known: 0 }); // removal seen without the add: start unknown
   }
-  await db.batch([
-    db.prepare('DELETE FROM task_assignees WHERE task_id=?').bind(taskId),
-    ...rows.map((r) => db.prepare('INSERT OR IGNORE INTO task_assignees(task_id,clickup_user_id,start_ms,end_ms,start_known) VALUES (?,?,?,?,?)').bind(taskId, r.uid, r.start, r.end, r.known)),
-  ]);
+  return rows;
+}
+export async function rebuildAssignees(db, taskId) { return rebuildAssigneesBulk(db, [taskId]); }
+// One read + chunked writes for many tasks (keeps CPU and round trips low).
+export async function rebuildAssigneesBulk(db, taskIds) {
+  for (let i = 0; i < taskIds.length; i += 40) {
+    const ids = taskIds.slice(i, i + 40);
+    const ph = ids.map(() => '?').join(',');
+    const ev = (await db.prepare(`SELECT task_id,kind,at_ms,to_val,from_val,note FROM task_events WHERE kind IN ('assignee_add','assignee_rem') AND task_id IN (${ph}) ORDER BY at_ms,id`).bind(...ids).all()).results;
+    const by = new Map(ids.map((id) => [id, []]));
+    for (const e of ev) by.get(e.task_id).push(e);
+    const stmts = [db.prepare(`DELETE FROM task_assignees WHERE task_id IN (${ph})`).bind(...ids)];
+    for (const [id, list] of by) for (const r of assigneeRows(list)) stmts.push(db.prepare('INSERT OR IGNORE INTO task_assignees(task_id,clickup_user_id,start_ms,end_ms,start_known) VALUES (?,?,?,?,?)').bind(id, r.uid, r.start, r.end, r.known));
+    for (let j = 0; j < stmts.length; j += 90) await db.batch(stmts.slice(j, j + 90));
+  }
 }
 
 async function applyLatestToTask(db, taskId) {
@@ -126,40 +136,53 @@ export async function refreshTaskMeta(env, taskId) {
 // ---------------------------------------------------------------- reconcile / sync
 export async function syncState(db) { return db.prepare('SELECT * FROM sync_state WHERE id=1').first(); }
 
-export async function runSync(env, now, { manual = false } = {}) {
+const PAGES_PER_RUN = 2; // keeps each request small enough for the free CPU limit; the caller (button or cron) continues
+const FULL_AFTER_MS = 7 * 86400000;
+
+export async function runSync(env, now, { manual = false, maxPages = PAGES_PER_RUN } = {}) {
   const db = env.DB;
   const st = await syncState(db);
-  if (st.running && now - (st.last_attempt_ms || 0) < 10 * 60000) return { skipped: 'already_running' };
+  if (st.running && now - (st.last_attempt_ms || 0) < 5 * 60000) return { ok: true, skipped: 'already_running', done: false };
   await db.prepare('UPDATE sync_state SET running=1,last_attempt_ms=? WHERE id=1').bind(now).run();
+  let cur = st.cursor ? JSON.parse(st.cursor) : null;
   try {
     const team = await getSetting(db, 'clickup_team_id', null);
     if (!team) throw new Error('ClickUp workspace is not selected yet.');
-    let page = st.cursor ? JSON.parse(st.cursor).page : 0;
-    const fresh = page === 0;
-    const seen = new Set();
-    let pages = 0, done = false;
+    // Full pass lists OPEN tasks; later passes only ask for tasks changed since the last good sync (closed ones included).
+    if (!cur) cur = { page: 0, mode: !st.last_ok_ms || now - st.last_ok_ms > FULL_AFTER_MS ? 'full' : 'incremental', since: (st.last_ok_ms || 0) - 2 * 86400000, seen: [], started: now };
     const map = await statusMap(db);
-    while (pages < 40) {
-      const r = await cu(env, `/team/${encodeURIComponent(team)}/task?page=${page}&include_closed=true&subtasks=true&order_by=updated`);
+    let pages = 0, done = false;
+    while (pages < maxPages) {
+      const q = cur.mode === 'full' ? 'include_closed=false' : `include_closed=true&date_updated_gt=${Math.max(0, cur.since)}`;
+      const r = await cu(env, `/team/${encodeURIComponent(team)}/task?page=${cur.page}&subtasks=true&order_by=updated&${q}`);
       const tasks = r.tasks || [];
       await reconcilePage(env, tasks, now, map);
-      tasks.forEach((t) => seen.add(String(t.id)));
-      pages++; page++;
+      if (cur.mode === 'full') cur.seen.push(...tasks.map((t) => String(t.id)));
+      pages++; cur.page++;
       if (r.last_page === true || tasks.length < 100) { done = true; break; }
     }
-    if (done && fresh) await probeMissing(env, seen, now);
-    if (done) await db.prepare('UPDATE sync_state SET running=0,last_ok_ms=?,last_error=NULL,cursor=NULL,last_run_day=? WHERE id=1').bind(now, localDate(now)).run();
-    else await db.prepare('UPDATE sync_state SET running=0,cursor=? WHERE id=1').bind(JSON.stringify({ page })).run();
-    return { ok: true, done, pages };
+    if (done) {
+      if (cur.mode === 'full') await probeMissing(env, new Set(cur.seen), now, map);
+      await rebuildLinked(env, now);
+      await db.prepare('UPDATE sync_state SET running=0,last_ok_ms=?,last_error=NULL,cursor=NULL,last_run_day=? WHERE id=1').bind(now, localDate(now)).run();
+    } else {
+      await db.prepare('UPDATE sync_state SET running=0,last_error=NULL,cursor=?,last_attempt_ms=? WHERE id=1').bind(JSON.stringify(cur), now).run();
+    }
+    return { ok: true, done, pages, page: cur.page };
   } catch (e) {
-    let msg = e.message;
-    let cursor = st.cursor;
-    if (e instanceof RateLimited) msg = 'ClickUp rate limit reached; will retry automatically.';
-    else if (e instanceof AuthRevoked) { msg = 'ClickUp access was revoked. Reconnect ClickUp in Settings.'; cursor = null; }
-    await db.prepare('UPDATE sync_state SET running=0,last_error=?,cursor=? WHERE id=1').bind(msg, cursor ?? null).run();
-    if (manual) return { ok: false, error: msg };
+    let msg = e.message, keep = cur;
+    if (e instanceof RateLimited) msg = 'ClickUp rate limit reached; it will continue automatically.';
+    else if (e instanceof AuthRevoked) { msg = 'ClickUp access was revoked. Reconnect ClickUp in Settings.'; keep = null; }
+    else if (!/workspace/.test(msg)) msg = 'Could not finish the ClickUp update. ' + (e.status ? `(ClickUp said ${e.status}) ` : '') + 'It will try again.';
+    console.error('sync_failed', e && e.stack || e);
+    await db.prepare('UPDATE sync_state SET running=0,last_error=?,cursor=? WHERE id=1').bind(msg, keep ? JSON.stringify(keep) : null).run();
     return { ok: false, error: msg };
   }
+}
+
+async function rebuildLinked(env, now) {
+  const people = (await env.DB.prepare('SELECT id FROM employees WHERE clickup_user_id IS NOT NULL AND active=1').all()).results;
+  for (const p of people) await rebuildEmployee(env, p.id, now - 3 * 86400000, now);
 }
 
 export async function reconcilePage(env, tasks, now, map) {
@@ -213,17 +236,13 @@ export async function reconcilePage(env, tasks, now, map) {
     if (asgChanged) { touched.push([id, now, true]); touchPeople([...snap, ...cur], now); }
   }
   for (let i = 0; i < stmts.length; i += 40) await db.batch(stmts.slice(i, i + 40));
-  for (const [id, , asg] of touched) if (asg) await rebuildAssignees(db, id);
-  // one rebuild per affected person, not per task
-  for (const [u, at] of people) {
-    const e = await db.prepare('SELECT id FROM employees WHERE clickup_user_id=?').bind(u).first();
-    if (e) await rebuildEmployee(env, e.id, at, now);
-  }
+  await rebuildAssigneesBulk(db, touched.filter((t) => t[2]).map((t) => t[0]));
+  // time sessions are rebuilt once when the whole sync finishes (rebuildLinked), not per page
 }
 
 // A task missing from the listing may just be archived/closed, so confirm individually before calling it deleted.
-async function probeMissing(env, seen, now) {
-  const rows = (await env.DB.prepare('SELECT id,status FROM tasks WHERE deleted=0').all()).results.filter((r) => !seen.has(r.id)).slice(0, 15);
+async function probeMissing(env, seen, now, map) {
+  const rows = (await env.DB.prepare('SELECT id,status FROM tasks WHERE deleted=0').all()).results.filter((r) => !seen.has(r.id) && classify(r.status, map) !== 'done').slice(0, 15);
   for (const r of rows) {
     try { await cu(env, `/task/${encodeURIComponent(r.id)}`); }
     catch (e) {
@@ -243,10 +262,10 @@ export async function cronTick(env, now) {
   const st = await syncState(env.DB);
   const at = await getSetting(env.DB, 'sync_time_min', 18 * 60 + 30);
   const today = localDate(now);
-  // A failed daily sync is retried at most every 2 hours (not a polling loop); an interrupted multi-page sync continues after 30 minutes.
+  // A failed daily sync is retried at most every 2 hours (not a polling loop); an interrupted multi-page sync continues on the next tick.
   const since = now - (st.last_attempt_ms || 0);
   const due = localMinutes(now) >= at && st.last_run_day !== today && since >= 2 * 3600000;
-  if (due || (st.cursor && since >= 30 * 60000)) await runSync(env, now);
+  if (due || (st.cursor && since >= 10 * 60000)) await runSync(env, now);
 }
 
 // ---------------------------------------------------------------- admin: connection

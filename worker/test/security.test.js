@@ -27,7 +27,7 @@ describe('authentication', () => {
     const c = new Client();
     const bad = await c.post('/api/login', { email: 'alice@x.test', password: 'nope-nope-nope' });
     expect(bad.status).toBe(401);
-    expect(bad.data.error.message).toBe('Email or password is wrong.');
+    expect(bad.data.error.message).toMatch(/^Email or password is wrong/);
     for (let i = 0; i < 5; i++) await c.post('/api/login', { email: 'zed@x.test', password: 'x' + i });
     expect((await c.post('/api/login', { email: 'zed@x.test', password: 'x' })).status).toBe(429);
   });

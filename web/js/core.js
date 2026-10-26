@@ -118,3 +118,14 @@ export const draft = {
   set(k, v) { try { localStorage.setItem('ytm-draft:' + k, JSON.stringify(v)); } catch {} },
   del(k) { try { localStorage.removeItem('ytm-draft:' + k); } catch {} },
 };
+
+// Sync runs a few pages per request (free-tier CPU limit). Keep asking until the server says it is done.
+export async function syncUntilDone(onProgress) {
+  for (let i = 0; i < 40; i++) {
+    const r = await post('/api/admin/clickup/sync');
+    if (!r.ok) return r;
+    if (r.done || r.skipped) return { ...r, done: true };
+    onProgress?.(r.page);
+  }
+  return { ok: false, error: 'Still working. Press Sync now again in a minute.' };
+}

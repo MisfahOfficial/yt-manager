@@ -1,12 +1,20 @@
-import { h, get, post, field, dialog, busy, announce, chip, empty, errBox, fmtDateTime, fmtTime, toInput, fromInput, todayYmd, ApiError } from './core.js';
+import { h, get, post, syncUntilDone, field, dialog, busy, announce, chip, empty, errBox, fmtDateTime, fmtTime, toInput, fromInput, todayYmd, ApiError } from './core.js';
 
+// A home/office IPv6 address changes per device, so trust the whole /64 network instead of one address.
+function v6to64(ip) {
+  if (!ip.includes(':')) return ip;
+  let [head, tail] = ip.split('::');
+  const h1 = head ? head.split(':') : [], t1 = tail ? tail.split(':') : [];
+  const groups = [...h1, ...Array(Math.max(0, 8 - h1.length - t1.length)).fill('0'), ...t1].map((g) => g.replace(/^0+(?=.)/, ''));
+  return groups.slice(0, 4).join(':') + '::/64';
+}
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const minToStr = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 const strToMin = (s) => { const [a, b] = s.split(':').map(Number); return a * 60 + b; };
 const cancelBtn = (close) => h('button', { class: 'btn', type: 'button', onclick: close }, 'Cancel');
-function secretDialog(title, name, pw) {
+function secretDialog(title, name, pw, email) {
   const box = h('input', { type: 'text', readonly: true, value: pw, class: 'mono', 'aria-label': 'Temporary password' });
-  dialog(title, h('div', { class: 'stack' }, h('p', {}, `Give this temporary password to ${name}. It is shown only once. They must choose a new one at first sign-in.`), box), (close) => {
+  dialog(title, h('div', { class: 'stack' }, h('p', {}, `Give ${name} these sign-in details. The password is shown only once and they must choose a new one at first sign-in.`), email ? h('p', {}, 'Email (exactly as typed): ', h('strong', { class: 'mono' }, email)) : null, box), (close) => {
     const c = h('button', { class: 'btn', type: 'button' }, 'Copy');
     c.addEventListener('click', async () => { try { await navigator.clipboard.writeText(pw); announce('Copied'); } catch { box.select(); } });
     return [c, h('button', { class: 'btn primary', type: 'button', onclick: close }, 'Done')];
@@ -49,7 +57,7 @@ async function personDialog(e, emps, done, shifts = []) {
     save.addEventListener('click', busy(save, async () => {
       try {
         const payload = { name: name.value, email: email.value, role: role.value, manager_id: mgr.value || null, can_correct: canFix.checked, clickup_user_id: cu.value.trim() || null, active: active.checked };
-        if (isNew) { const r = await post('/api/admin/employees', payload); close(); secretDialog('Person added', name.value, r.temp_password); }
+        if (isNew) { const r = await post('/api/admin/employees', payload); close(); secretDialog('Person added', name.value, r.temp_password, email.value.trim().toLowerCase()); }
         else { await post('/api/admin/employees/' + e.id, payload); announce('Saved ✓'); close(); }
         done();
       } catch (er) { announce(er.message, 'err'); }
@@ -58,7 +66,7 @@ async function personDialog(e, emps, done, shifts = []) {
     if (!isNew) {
       const mk = (label, fn) => { const b = h('button', { class: 'btn small', type: 'button' }, label); b.addEventListener('click', () => fn()); return b; };
       extra.push(mk('Shift', () => shiftDialog(e, shifts, done)), mk('Leave', () => leaveDialog(e)), mk('Overtime', () => overtimeDialog(e)),
-        mk('Reset password', async () => { if (!confirm(`Reset ${e.name}'s password? They will be signed out.`)) return; try { const r = await post(`/api/admin/employees/${e.id}/reset-password`); close(); secretDialog('Password reset', e.name, r.temp_password); } catch (er) { announce(er.message, 'err'); } }));
+        mk('Reset password', async () => { if (!confirm(`Reset ${e.name}'s password? They will be signed out.`)) return; try { const r = await post(`/api/admin/employees/${e.id}/reset-password`); close(); secretDialog('Password reset', e.name, r.temp_password, e.email); } catch (er) { announce(er.message, 'err'); } }));
     }
     return [...extra, cancelBtn(close), save];
   });
@@ -136,7 +144,7 @@ export async function settingsPage(root, me) {
     ips.length ? h('ul', {}, ips.map((ip) => { const b = h('button', { class: 'btn small', type: 'button' }, 'Remove'); b.addEventListener('click', () => confirm(`Remove ${ip}? Nobody will be able to check in from it.`) && save({ office_ips: ips.filter((x) => x !== ip) })); return h('li', { class: 'row between' }, h('span', { class: 'mono' }, ip), b); }))
       : h('div', { class: 'warnbox' }, 'No office address is set, so nobody can check in.'),
     h('div', { class: 'row' }, addIp, (() => { const b = h('button', { class: 'btn', type: 'button' }, 'Add'); b.addEventListener('click', () => addIp.value && save({ office_ips: [...ips, addIp.value.trim()] })); return b; })(),
-      s.detected_ip && !ips.includes(s.detected_ip) ? (() => { const b = h('button', { class: 'btn', type: 'button' }, 'Add my current address'); b.addEventListener('click', () => confirm(`Only do this while you are in the office on the office network. Add ${s.detected_ip}?`) && save({ office_ips: [...ips, s.detected_ip] })); return b; })() : null));
+      s.detected_ip && !ips.includes(v6to64(s.detected_ip)) ? (() => { const b = h('button', { class: 'btn', type: 'button' }, 'Add my current address'); b.addEventListener('click', () => confirm(`Only do this while you are in the office on the office network. Add ${v6to64(s.detected_ip)}?`) && save({ office_ips: [...ips, v6to64(s.detected_ip)] })); return b; })() : null));
 
   const exWhy = h('input', { type: 'text', minlength: 10, maxlength: 300, placeholder: 'Why? e.g. Office internet is down' });
   const exHours = h('select', {}, [1, 2, 4, 8, 24].map((n) => h('option', { value: n, selected: n === 4 }, `${n} hour${n > 1 ? 's' : ''}`)));
@@ -163,7 +171,7 @@ export async function settingsPage(root, me) {
       (() => { const b = h('button', { class: 'btn', type: 'button' }, '3. Turn on live updates'); b.addEventListener('click', busy(b, async () => { try { await post('/api/admin/clickup/webhook'); announce('Live updates on ✓'); reload(); } catch (e) { announce(e.message, 'err'); } })); return b; })(),
       field('End-of-day update time (Pakistan time)', syncTime), field('"Request changes" moves tasks to this status', revStatus),
       (() => { const b = h('button', { class: 'btn primary', type: 'button' }, 'Save ClickUp settings'); b.addEventListener('click', () => save({ sync_time_min: strToMin(syncTime.value || '18:30'), revisions_status: revStatus.value })); return b; })(),
-      (() => { const b = h('button', { class: 'btn', type: 'button' }, 'Sync now'); b.addEventListener('click', busy(b, async () => { try { const r = await post('/api/admin/clickup/sync'); announce(r.ok ? 'Updated ✓' : r.error || 'Not finished', r.ok ? 'ok' : 'err'); reload(); } catch (e) { announce(e.message, 'err'); } })); return b; })()));
+      (() => { const b = h('button', { class: 'btn', type: 'button' }, 'Sync now'); b.addEventListener('click', busy(b, async () => { try { const r = await syncUntilDone((p) => announce(`Updating from ClickUp… (${p * 100} tasks so far)`)); announce(r.ok ? 'Updated ✓' : r.error || 'Not finished', r.ok ? 'ok' : 'err'); reload(); } catch (e) { announce(e.message, 'err'); } })); return b; })()));
 
   // shifts
   const sn = h('input', { type: 'text', maxlength: 60, placeholder: 'e.g. Afternoon (college)' });

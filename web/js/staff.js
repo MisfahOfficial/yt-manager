@@ -118,6 +118,7 @@ export async function todayPage(root, me) {
       taskCard.append(h('div', { class: 'row' }, b));
     }
   } else taskCard.append(empty('No task is In Progress for you in ClickUp right now.'));
+  if (checkedIn && !t.active_task && t.unverified_tasks?.length) taskCard.append(h('div', { class: 'warnbox' }, `ClickUp has not told us when "${t.unverified_tasks[0].name}" started, so it is not timed yet. Move it to another status and back to In Progress in ClickUp to start the timer.`));
   taskCard.append(h('p', { class: 'muted' }, 'Recorded task time today: ', rec, ' — counted only while you are checked in.'));
   out.push(taskCard);
   root.replaceChildren(...out);
