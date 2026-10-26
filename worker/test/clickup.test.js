@@ -36,6 +36,10 @@ describe('reconcile', () => {
     expect((await env.DB.prepare('SELECT COUNT(*) n FROM tasks').first()).n).toBe(101);
     expect(calls.every((c) => c.init.headers.Authorization === 'pk_test_token')).toBe(true);
     expect(calls[0].url).toContain('/team/T1/task');
+    // personal tokens go bare; OAuth tokens need Bearer
+    const oe = mockEnv(() => ok({ teams: [] })); oe.CLICKUP_TOKEN = 'oauth_abc';
+    await (await import('../src/clickup.js')).cu(oe, '/team');
+    expect(calls[0].init.headers.Authorization).toBe('Bearer oauth_abc');
     const st = await env.DB.prepare('SELECT * FROM sync_state').first();
     expect(st.last_ok_ms).toBe(Date.now());
     expect(st.last_error).toBeNull();

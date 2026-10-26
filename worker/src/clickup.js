@@ -27,7 +27,7 @@ export async function cu(env, path, { method = 'GET', body, retries = 2 } = {}) 
   if (!token) throw new Error('clickup_not_connected');
   for (let i = 0; ; i++) {
     const res = await (env.CLICKUP_FETCH || fetch)(API + path, {
-      method, headers: { Authorization: token, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined,
+      method, headers: { Authorization: token.startsWith('pk_') ? token : `Bearer ${token}`, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined,
     });
     if (res.status === 401) throw new AuthRevoked();
     if (res.status === 429) throw new RateLimited(Number(res.headers.get('x-ratelimit-reset') || 0) * 1000);

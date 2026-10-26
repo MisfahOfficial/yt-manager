@@ -5,8 +5,9 @@
   "compatibility_flags": ["nodejs_compat"],
   "assets": { "directory": "../web", "binding": "ASSETS", "not_found_handling": "single-page-application", "run_worker_first": ["/api/*"] },
   "d1_databases": [
-    { "binding": "DB", "database_name": "ytm", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "migrations" }
+    { "binding": "DB", "database_name": "ytm", "database_id": "5b275893-b291-465c-8bad-0d7d73f39d71", "migrations_dir": "migrations" }
   ],
+  "preview_urls": false,
   "triggers": { "crons": ["*/15 * * * *"] },
   "vars": { "TZ_NAME": "Asia/Karachi", "SESSION_HOURS": "12", "PBKDF2_ITER": "100000" }
 }
