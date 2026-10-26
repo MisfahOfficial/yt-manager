@@ -36,6 +36,7 @@ describe('reconcile', () => {
     expect((await env.DB.prepare('SELECT COUNT(*) n FROM tasks').first()).n).toBe(101);
     expect(calls.every((c) => c.init.headers.Authorization === 'pk_test_token')).toBe(true);
     expect(calls[0].url).toContain('/team/T1/task');
+    expect(calls[0].url).toContain('assignees[]=555'); // only linked people's tasks
     // personal tokens go bare; OAuth tokens need Bearer
     const oe = mockEnv(() => ok({ teams: [] })); oe.CLICKUP_TOKEN = 'oauth_abc';
     await (await import('../src/clickup.js')).cu(oe, '/team');

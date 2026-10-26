@@ -148,13 +148,17 @@ export async function runSync(env, now, { manual = false, maxPages = PAGES_PER_R
   try {
     const team = await getSetting(db, 'clickup_team_id', null);
     if (!team) throw new Error('ClickUp workspace is not selected yet.');
+    // Only tasks assigned to people linked to ClickUp matter; everything else in the workspace is skipped.
+    const linked = (await db.prepare('SELECT clickup_user_id FROM employees WHERE clickup_user_id IS NOT NULL AND active=1').all()).results.map((r) => r.clickup_user_id);
+    if (!linked.length) throw new Error('No one is linked to a ClickUp account yet. Link people under People first.');
+    const who = linked.map((u) => `&assignees[]=${encodeURIComponent(u)}`).join('');
     // Full pass lists OPEN tasks; later passes only ask for tasks changed since the last good sync (closed ones included).
     if (!cur) cur = { page: 0, mode: !st.last_ok_ms || now - st.last_ok_ms > FULL_AFTER_MS ? 'full' : 'incremental', since: (st.last_ok_ms || 0) - 2 * 86400000, seen: [], started: now };
     const map = await statusMap(db);
     let pages = 0, done = false;
     while (pages < maxPages) {
       const q = cur.mode === 'full' ? 'include_closed=false' : `include_closed=true&date_updated_gt=${Math.max(0, cur.since)}`;
-      const r = await cu(env, `/team/${encodeURIComponent(team)}/task?page=${cur.page}&subtasks=true&order_by=updated&${q}`);
+      const r = await cu(env, `/team/${encodeURIComponent(team)}/task?page=${cur.page}&subtasks=true&order_by=updated&${q}${who}`);
       const tasks = r.tasks || [];
       await reconcilePage(env, tasks, now, map);
       if (cur.mode === 'full') cur.seen.push(...tasks.map((t) => String(t.id)));
@@ -173,7 +177,7 @@ export async function runSync(env, now, { manual = false, maxPages = PAGES_PER_R
     let msg = e.message, keep = cur;
     if (e instanceof RateLimited) msg = 'ClickUp rate limit reached; it will continue automatically.';
     else if (e instanceof AuthRevoked) { msg = 'ClickUp access was revoked. Reconnect ClickUp in Settings.'; keep = null; }
-    else if (!/workspace/.test(msg)) msg = 'Could not finish the ClickUp update. ' + (e.status ? `(ClickUp said ${e.status}) ` : '') + 'It will try again.';
+    else if (!/workspace|linked/.test(msg)) msg = 'Could not finish the ClickUp update. ' + (e.status ? `(ClickUp said ${e.status}) ` : '') + 'It will try again.';
     console.error('sync_failed', e && e.stack || e);
     await db.prepare('UPDATE sync_state SET running=0,last_error=?,cursor=? WHERE id=1').bind(msg, keep ? JSON.stringify(keep) : null).run();
     return { ok: false, error: msg };
