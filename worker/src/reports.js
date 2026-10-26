@@ -1,0 +1,189 @@
+import { json, bad, forbidden, getSetting } from './http.js';
+import { teamIds } from './work.js';
+import { loadShiftContext, attendanceEnd, statusMap } from './engine.js';
+import { statusTimeline, deliveries, applicableDeadline, classify, normalize, intersect, total } from './lib/timer.js';
+import { periodRange, localMidnightMs, addDays, localDate, prevPeriod, isYmd, weekStart } from './lib/time.js';
+
+const MIN = 60000;
+
+export async function employeeReport(env, emp, kind, period, now, map) {
+  const { from, to } = periodRange(kind, period);
+  const fromMs = localMidnightMs(from), toMs = localMidnightMs(addDays(to, 1));
+  const db = env.DB;
+  const sc = await loadShiftContext(db, emp.id, fromMs - 86400000, toMs);
+  const att = (await db.prepare('SELECT * FROM attendance WHERE employee_id=? AND check_in_at<? AND COALESCE(check_out_at,?)>? ORDER BY check_in_at').bind(emp.id, toMs, now, fromMs).all()).results;
+  const leaveRows = sc.leaves;
+  const warn = [];
+
+  const days = [];
+  let scheduled = 0, present = 0, leaveDays = 0, absent = 0, lateCount = 0, lateMin = 0, earlyCount = 0, earlyMin = 0, missingCo = 0, corrected = 0;
+  const cutoff = Math.min(toMs, now);
+  for (const w of sc.windows.filter((x) => x.start >= fromMs && x.start < toMs && x.start < now)) {
+    const d = w.date;
+    const onLeave = false; // windows already exclude leave days
+    scheduled++;
+    const here = att.filter((a) => a.check_in_at < w.end && attendanceEnd(a, sc.windows, now) > w.start);
+    if (!here.length) { absent++; days.push({ date: d, status: 'absent', attendance_ids: [] }); continue; }
+    present++;
+    const first = Math.min(...here.map((a) => a.check_in_at));
+    const closed = here.filter((a) => a.check_out_at != null);
+    const last = closed.length ? Math.max(...closed.map((a) => a.check_out_at)) : null;
+    const grace = (sc.asg.find((x) => x.effective_from <= d && (!x.effective_to || d <= x.effective_to))?.shift.grace_min) ?? 10;
+    let late = 0, early = 0;
+    if (first > w.start + grace * MIN) { late = Math.round((first - w.start) / MIN); lateCount++; lateMin += late; }
+    const miss = here.some((a) => a.status === 'missing_checkout');
+    const stillOpen = here.some((a) => a.status === 'open');
+    if (miss) missingCo++;
+    else if (last != null && !stillOpen && last < w.end) { early = Math.round((w.end - last) / MIN); earlyCount++; earlyMin += early; }
+    if (here.some((a) => a.corrected)) corrected++;
+    days.push({ date: d, status: 'present', late_min: late, early_min: early, missing_checkout: miss, attendance_ids: here.map((a) => a.id) });
+  }
+  // approved leave on days the person was otherwise scheduled
+  const asgAll = sc.asg;
+  let dd = from;
+  while (dd <= to) {
+    const a = asgAll.find((x) => x.effective_from <= dd && (!x.effective_to || dd <= x.effective_to));
+    const onL = leaveRows.some((l) => l.date_from <= dd && dd <= l.date_to);
+    if (a && onL && ((a.shift.days_mask >> ((new Date(dd + 'T00:00:00Z').getUTCDay() + 6) % 7)) & 1) && localMidnightMs(dd) < now) leaveDays++;
+    dd = addDays(dd, 1);
+  }
+
+  const deps = (await db.prepare('SELECT id,task_id,created_at,is_complete,taskless_reason,attendance_id FROM deposits WHERE employee_id=? AND created_at>=? AND created_at<?').bind(emp.id, fromMs, toMs).all()).results;
+  const attDaysWithDeposit = new Set(deps.map((d) => localDate(d.created_at)));
+  const missingDeposits = days.filter((d) => d.status === 'present' && !attDaysWithDeposit.has(d.date)).length;
+  const exceptions = att.filter((a) => a.checkout_exception).length;
+  const netEx = att.filter((a) => a.network_exception_id).length;
+
+  const sess = (await db.prepare('SELECT * FROM task_sessions WHERE employee_id=? AND start_ms<? AND COALESCE(end_ms,?)>?').bind(emp.id, toMs, now, fromMs).all()).results;
+  let origMs = 0, revMs = 0;
+  const byTask = new Map();
+  for (const s of sess) {
+    const ms = Math.max(0, Math.min(s.end_ms ?? now, toMs, now) - Math.max(s.start_ms, fromMs));
+    if (s.kind === 'revision') revMs += ms; else origMs += ms;
+    const b = byTask.get(s.task_id) || { orig: 0, rev: 0 }; b[s.kind === 'revision' ? 'rev' : 'orig'] += ms; byTask.set(s.task_id, b);
+  }
+
+  const deliveredTasks = []; let onTime = 0, overdue = 0, noDeadline = 0, revDelivered = 0;
+  const blockers = []; const gapsOut = [];
+  if (emp.clickup_user_id) {
+    const tids = (await db.prepare('SELECT DISTINCT task_id FROM task_assignees WHERE clickup_user_id=?').bind(emp.clickup_user_id).all()).results.map((r) => r.task_id);
+    for (const id of tids) {
+      const ev = (await db.prepare('SELECT * FROM task_events WHERE task_id=? ORDER BY at_ms,id').bind(id).all()).results;
+      const t = await db.prepare('SELECT id,name,url,list_name,work_type FROM tasks WHERE id=?').bind(id).first();
+      const dl = deliveries(ev, map);
+      const due = ev.filter((e) => e.kind === 'due');
+      dl.forEach((d) => {
+        if (d.at < fromMs || d.at >= toMs) return;
+        if (d.kind === 'revision') { revDelivered++; return; }
+        const ad = applicableDeadline(due, d.at);
+        const rec = { task_id: id, name: t?.name, url: t?.url, channel: t?.list_name || 'Not set', delivered_at: d.at, deadline: ad.deadline, original_deadline: ad.original ?? null, extended_after_miss: ad.extendedAfterMiss.length > 0 };
+        if (ad.deadline == null) { noDeadline++; rec.on_time = null; } else if (d.at <= ad.deadline) { onTime++; rec.on_time = true; } else { overdue++; rec.on_time = false; }
+        deliveredTasks.push(rec);
+      });
+      for (const seg of statusTimeline(ev, map)) {
+        if (seg.cls !== 'paused') continue;
+        const e = seg.end ?? now;
+        if (e <= fromMs || seg.start >= toMs) continue;
+        blockers.push({ task_id: id, name: t?.name, url: t?.url, status: seg.status, from: seg.start, to: seg.end, ms: Math.min(e, toMs) - Math.max(seg.start, fromMs), reason: 'No reason recorded in ClickUp' });
+      }
+      const g = (await db.prepare('SELECT from_ms,to_ms,reason FROM gaps WHERE task_id=? AND to_ms>? AND from_ms<?').bind(id, fromMs, toMs).all()).results;
+      g.forEach((x) => gapsOut.push({ task_id: id, name: t?.name, ...x }));
+    }
+  } else warn.push('Not linked to a ClickUp user: tasks and recorded time are not available.');
+
+  const attention = [];
+  if (absent) attention.push(`${absent} unexplained absence day(s)`);
+  if (missingCo) attention.push(`${missingCo} missing check-out(s) need correction`);
+  if (missingDeposits) attention.push(`${missingDeposits} present day(s) without a work deposit`);
+  if (overdue) attention.push(`${overdue} delivery(ies) after the agreed deadline`);
+  if (exceptions) attention.push(`${exceptions} check-out(s) done without a work deposit (technical exception)`);
+  if (netEx) attention.push(`${netEx} attendance record(s) made under a network exception`);
+  if (gapsOut.length) attention.push(`${gapsOut.length} ClickUp history gap(s): exact times unknown`);
+
+  const incomplete = toMs > now;
+  return {
+    employee: { id: emp.id, name: emp.name },
+    incomplete_period: incomplete, warnings: warn,
+    attendance: { scheduled_days: scheduled, present_days: present, approved_leave_days: leaveDays, unexplained_absence_days: absent, late_arrivals: lateCount, late_minutes: lateMin, early_departures: earlyCount, early_minutes: earlyMin, missing_checkouts: missingCo, corrected_days: corrected, days },
+    deposits: { count: deps.length, missing_days: missingDeposits, checkout_exceptions: exceptions },
+    delivery: { delivered: deliveredTasks.length, on_time: onTime, overdue, no_deadline: noDeadline, revision_deliveries: revDelivered, denominator: onTime + overdue, tasks: deliveredTasks, label: 'Ready for Upload / Delivered (not quality-approved)' },
+    recorded_time: { original_ms: origMs, revision_ms: revMs, note: 'Recorded task time while checked in and in an eligible status; not proof of focused editing.' },
+    blockers, gaps: gapsOut, attention,
+    sources: { attendance_ids: att.map((a) => a.id), deposit_ids: deps.map((d) => d.id), task_ids: [...byTask.keys(), ...deliveredTasks.map((t) => t.task_id)] },
+  };
+}
+
+function rollup(list) {
+  const sum = (f) => list.reduce((n, r) => n + f(r), 0);
+  return {
+    scheduled_days: sum((r) => r.attendance.scheduled_days), present_days: sum((r) => r.attendance.present_days),
+    leave_days: sum((r) => r.attendance.approved_leave_days), absent_days: sum((r) => r.attendance.unexplained_absence_days),
+    late_minutes: sum((r) => r.attendance.late_minutes), delivered: sum((r) => r.delivery.delivered), on_time: sum((r) => r.delivery.on_time), overdue: sum((r) => r.delivery.overdue),
+    original_ms: sum((r) => r.recorded_time.original_ms), revision_ms: sum((r) => r.recorded_time.revision_ms), deposits: sum((r) => r.deposits.count),
+  };
+}
+
+export async function buildReport(env, ids, kind, period, now) {
+  const map = await statusMap(env.DB);
+  const emps = ids.length ? (await env.DB.prepare(`SELECT id,name,clickup_user_id FROM employees WHERE id IN (${ids.map(() => '?').join(',')}) AND role<>'admin' AND active=1 ORDER BY name`).bind(...ids).all()).results : [];
+  const rows = [];
+  for (const e of emps) rows.push(await employeeReport(env, e, kind, period, now, map));
+  const out = { kind, period, range: periodRange(kind, period), generated_at: now, incomplete_period: rows.some((r) => r.incomplete_period), employees: rows, totals: rollup(rows),
+    notes: ['No automatic pay, raise or disciplinary decisions are made from this report.', 'Employees are not ranked: shifts and video complexity differ.'] };
+  if (kind === 'monthly') {
+    const pp = prevPeriod(kind, period);
+    const prevRows = [];
+    for (const e of emps) prevRows.push(await employeeReport(env, e, kind, pp, now, map));
+    const pt = rollup(prevRows);
+    const comparable = pt.scheduled_days > 0 && out.totals.scheduled_days > 0;
+    out.previous = { period: pp, totals: pt, comparable, comparable_note: comparable ? 'Compare per scheduled day; month lengths and shifts differ.' : 'Not comparable (no scheduled days in one of the months).' };
+    const rep = new Map();
+    for (const r of rows) for (const b of r.blockers) rep.set(b.task_id, (rep.get(b.task_id) || 0) + 1);
+    out.repeated_blockers = [...rep.entries()].filter(([, n]) => n > 1).map(([task_id, n]) => ({ task_id, times: n }));
+    const byCh = {};
+    for (const r of rows) for (const t of r.delivery.tasks) { const c = (byCh[t.channel] ||= { delivered: 0, on_time: 0, overdue: 0 }); c.delivered++; if (t.on_time === true) c.on_time++; if (t.on_time === false) c.overdue++; }
+    out.by_channel = byCh;
+    out.review_notes = rows.map((r) => ({ employee: r.employee.name, notes: [
+      ...(r.attendance.unexplained_absence_days ? ['Discuss attendance: unexplained absences'] : []),
+      ...(r.delivery.overdue ? ['Discuss workload / deadlines: late deliveries (check documented upstream delays first)'] : []),
+      ...(r.blockers.length > 2 ? ['Repeated blockers: check whether support or training is needed'] : []),
+      ...(r.warnings.length || r.gaps.length ? ['Data incomplete: confirm figures before any discussion'] : []),
+    ] }));
+  }
+  return out;
+}
+
+export async function getReport(ctx) {
+  const { env, url, now, emp } = ctx;
+  if (emp.role === 'employee') throw forbidden();
+  const kind = url.searchParams.get('kind') || 'weekly';
+  let period = url.searchParams.get('period');
+  if (!period) period = kind === 'weekly' ? addDays(weekStart(localDate(now)), -7) : prevPeriod('monthly', localDate(now).slice(0, 7));
+  let range; try { range = periodRange(kind, period); } catch (e) { throw bad('bad_period', e.message); }
+  const ids = await teamIds(ctx);
+  const scope = emp.role === 'admin' ? 'all' : emp.id;
+  const finished = localMidnightMs(addDays(range.to, 1)) <= now;
+  // Always recomputed from source records so corrections show immediately; the stored snapshot is an archive.
+  const rep = await buildReport(env, ids, kind, period, now);
+  if (finished) {
+    await env.DB.prepare('INSERT INTO report_snapshots(kind,period,scope,generated_at,body) VALUES (?,?,?,?,?) ON CONFLICT(kind,period,scope) DO UPDATE SET generated_at=excluded.generated_at,body=excluded.body')
+      .bind(kind, period, scope, now, JSON.stringify(rep)).run();
+  }
+  return json(rep);
+}
+
+// Cron: store the just-finished week/month so reports exist without anyone asking.
+export async function autoReports(env, now) {
+  const on = await getSetting(env.DB, 'auto_reports', true);
+  if (!on) return;
+  const today = localDate(now);
+  const lastWeek = addDays(weekStart(today), -7);
+  const lastMonth = prevPeriod('monthly', today.slice(0, 7));
+  const ids = (await env.DB.prepare("SELECT id FROM employees WHERE active=1").all()).results.map((r) => r.id);
+  for (const [kind, period] of [['weekly', lastWeek], ['monthly', lastMonth]]) {
+    const have = await env.DB.prepare("SELECT 1 FROM report_snapshots WHERE kind=? AND period=? AND scope='all'").bind(kind, period).first();
+    if (have) continue;
+    const rep = await buildReport(env, ids, kind, period, now);
+    await env.DB.prepare("INSERT OR IGNORE INTO report_snapshots(kind,period,scope,generated_at,body) VALUES (?,?,'all',?,?)").bind(kind, period, now, JSON.stringify(rep)).run();
+  }
+}

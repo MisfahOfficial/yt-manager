@@ -1,0 +1,14 @@
+{
+  "name": "yt-manager-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.4.7",
+    "vitest": "^5.0.5",
+    "wrangler": "^4.152.0"
+  }
+}
