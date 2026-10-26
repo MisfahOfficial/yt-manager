@@ -13,7 +13,7 @@ const ROUTES = [
   ['POST', '/api/bootstrap', auth.bootstrap, 'public'],
   ['POST', '/api/login', auth.login, 'public'],
   ['POST', '/api/webhooks/clickup', cl.webhook, 'public', { raw: true }],
-  ['GET', '/api/health', () => json({ ok: true }), 'public'],
+  ['GET', '/api/health', async (c) => json({ ok: true, needs_setup: !(await c.env.DB.prepare("SELECT 1 FROM employees WHERE role='admin'").first()) }), 'public'],
   ['POST', '/api/logout', auth.logout, [E, M, A]],
   ['GET', '/api/me', (c) => json({ me: { id: c.emp.id, name: c.emp.name, email: c.emp.email, role: c.emp.role, can_correct: !!c.emp.can_correct, must_change_pw: !!c.emp.must_change_pw, clickup_linked: !!c.emp.clickup_user_id } }), [E, M, A]],
   ['POST', '/api/password', auth.changePassword, [E, M, A]],
@@ -60,6 +60,8 @@ const ROUTES = [
   ['GET', '/api/admin/audit', adm.auditList, [A]],
   ['GET', '/api/admin/clickup/health', cl.health, [M, A]],
   ['POST', '/api/admin/clickup/token', cl.saveToken, [A]],
+  ['POST', '/api/admin/clickup/oauth', cl.oauthStart, [A]],
+  ['GET', '/api/clickup/callback', cl.oauthCallback, 'public'],
   ['GET', '/api/admin/clickup/members', cl.members, [A]],
   ['POST', '/api/admin/clickup/webhook', cl.createWebhook, [A]],
   ['POST', '/api/admin/clickup/sync', cl.syncNow, [M, A]],
@@ -119,6 +121,16 @@ export async function handle(request, env, execCtx) {
   }
 }
 
+// keep tables small: nothing here is needed after it expires
+async function housekeeping(db, now) {
+  await db.batch([
+    db.prepare('DELETE FROM nonces WHERE expires_at<?').bind(now),
+    db.prepare('DELETE FROM sessions WHERE expires_at<?').bind(now),
+    db.prepare('DELETE FROM login_attempts WHERE at<?').bind(now - 86400000),
+    db.prepare('DELETE FROM idempotency WHERE at_ms<?').bind(now - 14 * 86400000),
+  ]);
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -129,6 +141,7 @@ export default {
     const now = Date.now();
     ctx.waitUntil((async () => {
       await sweepMissingCheckouts(env.DB, now);
+      await housekeeping(env.DB, now);
       await cl.cronTick(env, now);
       await rep.autoReports(env, now);
     })());

@@ -1,1 +1,23 @@
-<!doctype html><title>YT Manager</title>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YT Manager</title>
+<meta name="color-scheme" content="light dark">
+<link rel="stylesheet" href="/app.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top" id="top" hidden>
+  <div class="brand">YT Manager</div>
+  <nav id="nav" aria-label="Main"></nav>
+  <div class="who"><span id="whoName"></span><button class="btn small" id="logout" type="button">Sign out</button></div>
+</header>
+<nav class="sub" id="sub" aria-label="My work" hidden></nav>
+<main id="main" tabindex="-1"></main>
+<div id="live" class="toast" role="status" aria-live="polite" hidden></div>
+<script type="module" src="/js/app.js"></script>
+</body>
+</html>

@@ -1,6 +1,6 @@
 import { HttpError, bad, forbidden, json, str, int, audit, auditStmt, getSetting, setSettingStmt } from './http.js';
 import { hmacHex, timingSafeEqual, encryptSecret, decryptSecret, randomToken, sha256Hex } from './lib/crypto.js';
-import { rebuildForTask, statusMap } from './engine.js';
+import { rebuildForTask, rebuildEmployee, statusMap } from './engine.js';
 import { classify } from './lib/timer.js';
 import { localDate, localMinutes } from './lib/time.js';
 
@@ -155,8 +155,8 @@ export async function runSync(env, now, { manual = false } = {}) {
     let msg = e.message;
     let cursor = st.cursor;
     if (e instanceof RateLimited) msg = 'ClickUp rate limit reached; will retry automatically.';
-    else if (e instanceof AuthRevoked) msg = 'ClickUp access was revoked. Reconnect ClickUp in Settings.';
-    await db.prepare('UPDATE sync_state SET running=0,last_error=? WHERE id=1').bind(msg).run();
+    else if (e instanceof AuthRevoked) { msg = 'ClickUp access was revoked. Reconnect ClickUp in Settings.'; cursor = null; }
+    await db.prepare('UPDATE sync_state SET running=0,last_error=?,cursor=? WHERE id=1').bind(msg, cursor ?? null).run();
     if (manual) return { ok: false, error: msg };
     return { ok: false, error: msg };
   }
@@ -174,7 +174,8 @@ export async function reconcilePage(env, tasks, now, map) {
   const asgBy = new Map();
   for (const a of openAsg) { if (!asgBy.has(a.task_id)) asgBy.set(a.task_id, new Set()); asgBy.get(a.task_id).add(a.clickup_user_id); }
 
-  const stmts = []; const touched = [];
+  const stmts = []; const touched = []; const people = new Map();
+  const touchPeople = (ids, at) => { for (const u of ids) people.set(u, Math.min(people.get(u) ?? Infinity, at)); };
   for (const t of tasks) {
     const id = String(t.id);
     const status = t.status?.status ?? null;
@@ -192,6 +193,7 @@ export async function reconcilePage(env, tasks, now, map) {
       if (ls) stmts.push(db.prepare('INSERT INTO gaps(task_id,from_ms,to_ms,reason,created_at) VALUES (?,?,?,?,?)')
         .bind(id, ls.at_ms, now, `Status changed from "${ls.to_val}" to "${status}" but no webhook was received; exact change time unknown.`, now));
       touched.push([id, at]);
+      touchPeople([...(asgBy.get(id) || []), ...(t.assignees || []).map((a) => String(a.id))], at);
     }
     const prevDue = known.get(id)?.due_ms ?? null;
     if (known.has(id) && prevDue !== due) {
@@ -208,10 +210,15 @@ export async function reconcilePage(env, tasks, now, map) {
       stmts.push(db.prepare("INSERT OR IGNORE INTO task_events(event_key,task_id,kind,at_ms,received_ms,source,to_val,note) VALUES (?,?,'assignee_add',?,?,'reconcile',?,'approx')").bind(`rec:${id}:add:${u}:${now}`, id, now, now, u)); }
     for (const u of cur) if (!snap.has(u)) { asgChanged = true;
       stmts.push(db.prepare("INSERT OR IGNORE INTO task_events(event_key,task_id,kind,at_ms,received_ms,source,from_val,note) VALUES (?,?,'assignee_rem',?,?,'reconcile',?,'approx')").bind(`rec:${id}:rem:${u}:${now}`, id, now, now, u)); }
-    if (asgChanged) touched.push([id, now, true]);
+    if (asgChanged) { touched.push([id, now, true]); touchPeople([...snap, ...cur], now); }
   }
   for (let i = 0; i < stmts.length; i += 40) await db.batch(stmts.slice(i, i + 40));
-  for (const [id, at, asg] of touched) { if (asg) await rebuildAssignees(db, id); await rebuildForTask(env, id, at, now); }
+  for (const [id, , asg] of touched) if (asg) await rebuildAssignees(db, id);
+  // one rebuild per affected person, not per task
+  for (const [u, at] of people) {
+    const e = await db.prepare('SELECT id FROM employees WHERE clickup_user_id=?').bind(u).first();
+    if (e) await rebuildEmployee(env, e.id, at, now);
+  }
 }
 
 // A task missing from the listing may just be archived/closed, so confirm individually before calling it deleted.
@@ -236,8 +243,10 @@ export async function cronTick(env, now) {
   const st = await syncState(env.DB);
   const at = await getSetting(env.DB, 'sync_time_min', 18 * 60 + 30);
   const today = localDate(now);
-  const due = localMinutes(now) >= at && st.last_run_day !== today;
-  if (due || st.cursor) await runSync(env, now);
+  // A failed daily sync is retried at most every 2 hours (not a polling loop); an interrupted multi-page sync continues after 30 minutes.
+  const since = now - (st.last_attempt_ms || 0);
+  const due = localMinutes(now) >= at && st.last_run_day !== today && since >= 2 * 3600000;
+  if (due || (st.cursor && since >= 30 * 60000)) await runSync(env, now);
 }
 
 // ---------------------------------------------------------------- admin: connection
@@ -275,4 +284,32 @@ export async function health(ctx) {
 export async function syncNow(ctx) {
   const r = await runSync(ctx.env, ctx.now, { manual: true });
   return json(r);
+}
+
+// ---------------------------------------------------------------- OAuth (preferred over a pasted token)
+export async function oauthStart(ctx) {
+  const { env } = ctx;
+  if (!env.CLICKUP_CLIENT_ID || !env.CLICKUP_CLIENT_SECRET) throw new HttpError(409, 'oauth_not_configured', 'ClickUp OAuth app is not set up on the server yet. Use the API token option or follow the setup guide.');
+  const state = randomToken(24);
+  const redirect = new URL(ctx.req.url).origin + '/api/clickup/callback';
+  await env.DB.batch([
+    setSettingStmt(env.DB, 'oauth_state', { hash: await sha256Hex(state), exp: ctx.now + 10 * 60000 }),
+    auditStmt(env.DB, { at: ctx.now, actor: ctx.emp.id, action: 'clickup_oauth_started' }),
+  ]);
+  return json({ url: `https://app.clickup.com/api?client_id=${encodeURIComponent(env.CLICKUP_CLIENT_ID)}&redirect_uri=${encodeURIComponent(redirect)}&state=${state}` });
+}
+// ClickUp redirects the browser here (a cross-site navigation, so the session cookie is not sent): the single-use state proves an admin started it.
+export async function oauthCallback(ctx) {
+  const { env, url, now } = ctx;
+  const code = url.searchParams.get('code'), state = url.searchParams.get('state') || '';
+  const saved = await getSetting(env.DB, 'oauth_state', null);
+  const fail = (m) => new Response(null, { status: 302, headers: { Location: '/#settings', 'set-cookie': '' } });
+  if (!saved || saved.exp < now || !code || !timingSafeEqual(saved.hash, await sha256Hex(state))) throw new HttpError(400, 'oauth_state', 'This connect link expired. Start again from Settings.');
+  await env.DB.prepare("DELETE FROM settings WHERE key='oauth_state'").run(); // single use
+  const res = await (env.CLICKUP_FETCH || fetch)(API + '/oauth/token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: env.CLICKUP_CLIENT_ID, client_secret: env.CLICKUP_CLIENT_SECRET, code }) });
+  const data = res.ok ? await res.json().catch(() => ({})) : {};
+  if (!data.access_token) throw new HttpError(502, 'oauth_failed', 'ClickUp did not accept the connection. Try again.');
+  await putSecret(env, 'clickup_token', data.access_token);
+  await audit(env.DB, { at: now, actor: null, action: 'clickup_oauth_connected' });
+  return new Response(null, { status: 302, headers: { Location: '/#settings' } });
 }
