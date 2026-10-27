@@ -129,3 +129,27 @@ export async function syncUntilDone(onProgress) {
   }
   return { ok: false, error: 'Still working. Press Sync now again in a minute.' };
 }
+
+const CHECK_TEXT = {
+  not_a_doc: 'This link is not a Google Doc, so it could not be checked.',
+  private: 'The Google Doc is private. Set sharing to "Anyone with the link can view", then press Re-check.',
+  not_found: 'That Google Doc was not found.',
+  unreachable: 'Google did not answer. Press Re-check in a minute.',
+};
+// Shows the script-check result for a deposit (rows come from the server as check_json or an object).
+export function checkView(check, depositId, onChange) {
+  if (!check) return null;
+  const c = typeof check === 'string' ? JSON.parse(check) : check;
+  const box = h('div', { class: 'checkbox' });
+  if (c.status !== 'ok') box.append(h('div', { class: 'warnbox' }, CHECK_TEXT[c.status] || 'The script could not be checked.'));
+  else {
+    box.append(h('div', {}, h('strong', {}, c.passed ? 'Script check: passed ✓' : `Script check: ${c.items.filter((i) => !i.ok).length} item(s) missing`)));
+    box.append(h('ul', { class: 'checklist' }, c.items.map((i) => h('li', { class: i.ok ? 'ok' : 'bad' }, `${i.ok ? '✓' : '✗'} ${i.label} — ${i.have} of ${i.need}`))));
+  }
+  if (depositId && onChange) {
+    const b = h('button', { class: 'btn small', type: 'button' }, 'Re-check');
+    b.addEventListener('click', busy(b, async () => { try { await post(`/api/deposits/${depositId}/recheck`); announce('Checked again'); onChange(); } catch (e) { announce(e.message, 'err'); } }));
+    box.append(b);
+  }
+  return box;
+}

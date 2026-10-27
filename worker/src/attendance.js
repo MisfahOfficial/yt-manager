@@ -2,6 +2,7 @@ import { HttpError, bad, conflict, forbidden, notFound, json, str, httpUrl, int,
 import { requireDevice } from './auth.js';
 import { ipAllowed } from './lib/net.js';
 import { uuid } from './lib/crypto.js';
+import { checkDeposit } from './scriptcheck.js';
 import { rebuildEmployee, sweepMissingCheckouts, activeState, loadShiftContext, attendanceEnd } from './engine.js';
 import { localDate, localMidnightMs, addDays, localMinutes } from './lib/time.js';
 
@@ -129,13 +130,14 @@ export async function checkOut(ctx) {
   if (!open) throw conflict('not_checked_in', 'You are not checked in.');
 
   const stmts = [];
-  let exception = null;
+  let exception = null, depositId = null, depositLink = null;
   if (body.exception_reason) {
     exception = str(body.exception_reason, 'reason', { min: 10, max: 500 });
   } else if (body.deposit) {
     const d = validateDeposit(body.deposit);
     await checkDepositTarget(env.DB, emp, d);
-    stmts.push(depositStmt(env.DB, emp, open.id, requestId, d, now).stmt);
+    const ds = depositStmt(env.DB, emp, open.id, requestId, d, now);
+    stmts.push(ds.stmt); depositId = ds.id; depositLink = d.link;
   } else {
     const have = await env.DB.prepare('SELECT COUNT(*) n FROM deposits WHERE attendance_id=?').bind(open.id).first();
     if (!have.n) throw new HttpError(422, 'deposit_required', 'Deposit your current work before you check out.');
@@ -157,6 +159,7 @@ export async function checkOut(ctx) {
   const after = await env.DB.prepare('SELECT checkout_request_id FROM attendance WHERE id=?').bind(open.id).first();
   if (after.checkout_request_id !== requestId) throw conflict('not_checked_in', 'You were already checked out from another tab.');
   await rebuildEmployee(env, emp.id, open.check_in_at, now);
+  if (depositId) result.check = await checkDeposit(env, { id: depositId, link: depositLink }, emp.job_role, now); // after checkout is saved; failures never undo it
   return json(result);
 }
 
@@ -165,7 +168,7 @@ export async function myHistory(ctx) {
   const days = Math.min(+url.searchParams.get('days') || 14, 92);
   const from = localMidnightMs(addDays(localDate(now), -days));
   const att = (await env.DB.prepare('SELECT * FROM attendance WHERE employee_id=? AND check_in_at>=? ORDER BY check_in_at DESC').bind(emp.id, from).all()).results.map(view);
-  const dep = (await env.DB.prepare('SELECT d.id,d.created_at,d.link,d.completed,d.pending,d.is_complete,d.taskless_reason,d.review_note,t.name task_name,t.url task_url FROM deposits d LEFT JOIN tasks t ON t.id=d.task_id WHERE d.employee_id=? AND d.created_at>=? ORDER BY d.created_at DESC').bind(emp.id, from).all()).results;
+  const dep = (await env.DB.prepare('SELECT d.id,d.created_at,d.link,d.completed,d.pending,d.is_complete,d.taskless_reason,d.review_note,d.check_json,t.name task_name,t.url task_url FROM deposits d LEFT JOIN tasks t ON t.id=d.task_id WHERE d.employee_id=? AND d.created_at>=? ORDER BY d.created_at DESC').bind(emp.id, from).all()).results;
   const ses = (await env.DB.prepare('SELECT s.task_id,s.kind,s.start_ms,s.end_ms,t.name task_name FROM task_sessions s LEFT JOIN tasks t ON t.id=s.task_id WHERE s.employee_id=? AND (s.end_ms IS NULL OR s.end_ms>=?) ORDER BY s.start_ms DESC').bind(emp.id, from).all()).results;
   return json({ attendance: att, deposits: dep, sessions: ses });
 }

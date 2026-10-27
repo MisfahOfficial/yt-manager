@@ -51,6 +51,17 @@ export async function employeeReport(env, emp, kind, period, now, map) {
   const deps = (await db.prepare('SELECT id,task_id,created_at,is_complete,taskless_reason,attendance_id FROM deposits WHERE employee_id=? AND created_at>=? AND created_at<?').bind(emp.id, fromMs, toMs).all()).results;
   const attDaysWithDeposit = new Set(deps.map((d) => localDate(d.created_at)));
   const missingDeposits = days.filter((d) => d.status === 'present' && !attDaysWithDeposit.has(d.date)).length;
+  // script checks: latest result per Google Doc link
+  const chk = (await db.prepare('SELECT id,link,check_json,created_at FROM deposits WHERE employee_id=? AND check_json IS NOT NULL AND created_at>=? AND created_at<? ORDER BY created_at').bind(emp.id, fromMs, toMs).all()).results;
+  const latest = new Map(chk.map((c) => [c.link, c]));
+  const scriptChecks = { checked: 0, passed: 0, failed: 0, unavailable: 0, by_rule: {}, failing: [] };
+  for (const c of latest.values()) {
+    const r = JSON.parse(c.check_json);
+    if (r.status !== 'ok') { scriptChecks.unavailable++; continue; }
+    scriptChecks.checked++;
+    if (r.passed) scriptChecks.passed++; else { scriptChecks.failed++; scriptChecks.failing.push({ deposit_id: c.id, link: c.link, missing: r.items.filter((i) => !i.ok).map((i) => `${i.label} (${i.have}/${i.need})`) }); }
+    for (const i of r.items) { const b = (scriptChecks.by_rule[i.label] ||= { passed: 0, total: 0 }); b.total++; if (i.ok) b.passed++; }
+  }
   const exceptions = att.filter((a) => a.checkout_exception).length;
   const netEx = att.filter((a) => a.network_exception_id).length;
 
@@ -98,6 +109,7 @@ export async function employeeReport(env, emp, kind, period, now, map) {
   if (overdue) attention.push(`${overdue} delivery(ies) after the agreed deadline`);
   if (exceptions) attention.push(`${exceptions} check-out(s) done without a work deposit (technical exception)`);
   if (netEx) attention.push(`${netEx} attendance record(s) made under a network exception`);
+  if (scriptChecks.failed) attention.push(`${scriptChecks.failed} script(s) did not pass the script check`);
   if (gapsOut.length) attention.push(`${gapsOut.length} ClickUp history gap(s): exact times unknown`);
 
   const incomplete = toMs > now;
@@ -108,7 +120,7 @@ export async function employeeReport(env, emp, kind, period, now, map) {
     deposits: { count: deps.length, missing_days: missingDeposits, checkout_exceptions: exceptions },
     delivery: { delivered: deliveredTasks.length, on_time: onTime, overdue, no_deadline: noDeadline, revision_deliveries: revDelivered, denominator: onTime + overdue, tasks: deliveredTasks, label: 'Ready for Upload / Delivered (not quality-approved)' },
     recorded_time: { original_ms: origMs, revision_ms: revMs, note: 'Recorded task time while checked in and in an eligible status; not proof of focused editing.' },
-    blockers, gaps: gapsOut, attention,
+    script_checks: scriptChecks, blockers, gaps: gapsOut, attention,
     sources: { attendance_ids: att.map((a) => a.id), deposit_ids: deps.map((d) => d.id), task_ids: [...byTask.keys(), ...deliveredTasks.map((t) => t.task_id)] },
   };
 }

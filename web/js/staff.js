@@ -1,4 +1,4 @@
-import { h, get, post, api, field, dialog, busy, announce, chip, empty, errBox, fmtTime, fmtDate, fmtDateTime, fmtDur, uid, draft, localDevice, createLocalDevice, ApiError } from './core.js';
+import { h, get, post, api, checkView, field, dialog, busy, announce, chip, empty, errBox, fmtTime, fmtDate, fmtDateTime, fmtDur, uid, draft, localDevice, createLocalDevice, ApiError } from './core.js';
 
 // One pending request id per action: a retry after a failed save reuses it, so the server can never double-record.
 const pendingId = (k) => { let v = sessionStorage.getItem('ytm-rid:' + k); if (!v) { v = uid(); sessionStorage.setItem('ytm-rid:' + k, v); } return v; };
@@ -149,7 +149,7 @@ function checkoutDialog(root, me, tasks, t) {
       try {
         const r = await post('/api/checkout', body, { sign: true });
         clearId('checkout'); dep.clear();
-        announce(r.exception ? 'Checked out (saved). Your manager will see the technical problem.' : 'Work deposited and checked out ✓ (saved)');
+        announce((r.exception ? 'Checked out (saved). Your manager will see the technical problem.' : 'Work deposited and checked out ✓ (saved)') + (r.check?.status === 'ok' ? (r.check.passed ? ' Script check passed.' : ' Script check: items missing, see My History.') : ''));
         close(); todayPage(root, me);
       } catch (e) {
         err.replaceChildren(errBox(e)); // inputs stay as typed
@@ -187,23 +187,24 @@ export async function depositPage(root, me) {
     ev.preventDefault(); err.replaceChildren();
     if (!form.reportValidity()) return;
     const p = dep.payload(); delete p._valid;
-    try { await post('/api/deposits', { request_id: pendingId('deposit'), ...p }); clearId('deposit'); dep.clear(); announce('Work deposit saved ✓'); depositPage(root, me); }
+    try { const r = await post('/api/deposits', { request_id: pendingId('deposit'), ...p }); clearId('deposit'); dep.clear(); announce('Work deposit saved ✓' + (r.check?.status === 'ok' ? (r.check.passed ? ' Script check passed.' : ' Script check: items missing, see below.') : '')); depositPage(root, me); }
     catch (e) { err.replaceChildren(errBox(e)); if (e.status && e.status < 500) clearId('deposit'); }
   }));
   const card = h('section', { class: 'card' }, h('h2', {}, 'Work deposit'),
     today.state === 'checked_in' ? form : empty('Check in first, then deposit your work here (or when you check out).'));
   const todays = h('section', { class: 'card' }, h('h2', {}, "Today's deposits"));
   if (!hist.deposits.length) todays.append(empty('None yet.'));
-  for (const d of hist.deposits) todays.append(depositItem(d));
+  for (const d of hist.deposits) todays.append(depositItem(d, () => depositPage(root, me)));
   root.replaceChildren(card, todays);
 }
 
-function depositItem(d) {
+function depositItem(d, onChange) {
   return h('div', { class: 'item col' },
     h('div', {}, h('strong', {}, d.task_name || d.taskless_reason || 'No task'), ' ', h('span', { class: 'muted' }, fmtTime(d.created_at)), ' ', d.is_complete ? chip('Finished', 'ok') : chip('In progress')),
     h('div', {}, d.completed), d.pending ? h('div', { class: 'muted' }, 'Pending: ' + d.pending) : null,
     h('a', { href: d.link, target: '_blank', rel: 'noopener noreferrer' }, 'Open work link'),
-    d.review_note ? h('div', { class: 'note' }, 'Manager note: ' + d.review_note) : null);
+    d.review_note ? h('div', { class: 'note' }, 'Manager note: ' + d.review_note) : null,
+    checkView(d.check_json, d.id, onChange));
 }
 
 export async function historyPage(root, me) {
@@ -216,7 +217,7 @@ export async function historyPage(root, me) {
       h('td', {}, a.check_out_at ? fmtTime(a.check_out_at) : a.status === 'missing_checkout' ? 'Missing' : 'Open'),
       h('td', {}, [a.corrected ? chip('Corrected') : null, a.checkout_exception ? chip('Tech problem', 'warn') : null, a.status === 'missing_checkout' ? chip('Needs fix', 'warn') : null]))))))); 
   const dep = h('section', { class: 'card' }, h('h2', {}, 'My work deposits'));
-  if (!r.deposits.length) dep.append(empty('None yet.')); r.deposits.forEach((d) => dep.append(h('div', {}, h('div', { class: 'muted' }, fmtDateTime(d.created_at)), depositItem(d))));
+  if (!r.deposits.length) dep.append(empty('None yet.')); r.deposits.forEach((d) => dep.append(h('div', {}, h('div', { class: 'muted' }, fmtDateTime(d.created_at)), depositItem(d, () => historyPage(root, me)))));
   const ses = h('section', { class: 'card' }, h('h2', {}, 'Recorded task time'), h('p', { class: 'muted' }, 'Counted only while checked in and the task was In Progress. Not proof of focused editing.'));
   if (!r.sessions.length) ses.append(empty('None yet.'));
   r.sessions.forEach((s) => ses.append(h('div', { class: 'item' }, h('div', {}, h('strong', {}, s.task_name || s.task_id), ' ', s.kind === 'revision' ? chip('Revision', 'warn') : null),

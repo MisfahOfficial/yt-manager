@@ -1,4 +1,4 @@
-import { h, get, post, syncUntilDone, field, dialog, busy, announce, chip, empty, errBox, fmtTime, fmtDate, fmtDateTime, fmtDur, toInput, fromInput, todayYmd } from './core.js';
+import { h, get, post, syncUntilDone, checkView, field, dialog, busy, announce, chip, empty, errBox, fmtTime, fmtDate, fmtDateTime, fmtDur, toInput, fromInput, todayYmd } from './core.js';
 import { depositItem } from './staff.js';
 
 const ATT = { checked_in: ['Checked in', 'ok'], done_for_today: ['Done for today', ''], not_in: ['Not in yet', 'warn'], missing_checkout: ['Missing check-out', 'bad'] };
@@ -41,6 +41,7 @@ export async function submissionsPage(root, me) {
       h('div', {}, s.completed), s.pending ? h('div', { class: 'muted' }, 'Pending: ' + s.pending) : null,
       h('a', { href: s.link, target: '_blank', rel: 'noopener noreferrer' }, 'Open work link'),
       s.review_note ? h('div', { class: 'note' }, 'Note: ' + s.review_note) : null,
+      checkView(s.check_json, s.id, () => submissionsPage(root, me)),
       (() => {
         const row = h('div', { class: 'row' });
         const note = h('button', { class: 'btn small', type: 'button' }, 'Add note');
@@ -132,6 +133,9 @@ function employeeBlock(e, kind) {
     d.tasks.length ? h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Task', 'Channel', 'Delivered', 'Deadline', ''].map((x) => h('th', {}, x)))),
       h('tbody', {}, d.tasks.map((t) => h('tr', {}, h('td', {}, h('a', { href: t.url || '#', target: '_blank', rel: 'noopener noreferrer' }, t.name || t.task_id)), h('td', {}, t.channel), h('td', {}, fmtDateTime(t.delivered_at)), h('td', {}, t.deadline ? fmtDateTime(t.deadline) : '—'),
         h('td', {}, t.on_time === true ? chip('On time', 'ok') : t.on_time === false ? chip('Late', 'bad') : chip('No deadline'), t.extended_after_miss ? chip('Extended after miss', 'warn') : null)))))) : null,
+    e.script_checks && (e.script_checks.checked || e.script_checks.unavailable) ? h('div', {}, h('strong', {}, 'Script checks'), h('p', {}, `${e.script_checks.passed} of ${e.script_checks.checked} script(s) passed all checks` + (e.script_checks.unavailable ? ` (${e.script_checks.unavailable} could not be read: private or not a Google Doc)` : '')),
+      h('ul', {}, Object.entries(e.script_checks.by_rule).map(([k, v]) => h('li', {}, `${k}: ${v.passed} of ${v.total}`))),
+      e.script_checks.failing.length ? h('ul', {}, e.script_checks.failing.map((f) => h('li', {}, h('a', { href: f.link, target: '_blank', rel: 'noopener noreferrer' }, 'Script'), ' — missing: ' + f.missing.join(', ')))) : null) : null,
     e.blockers.length ? h('div', {}, h('strong', {}, 'Blockers'), h('ul', {}, e.blockers.map((b) => h('li', {}, `${b.name || b.task_id}: ${fmtDur(b.ms)} — ${b.reason}`)))) : null,
     e.gaps.length ? h('div', {}, h('strong', {}, 'Missing ClickUp history'), h('ul', {}, e.gaps.map((g) => h('li', {}, `${g.name || g.task_id}: ${g.reason}`)))) : null,
     h('details', {}, h('summary', {}, 'Day by day'), h('div', { class: 'tablewrap' }, h('table', {}, h('tbody', {}, a.days.map((x) => h('tr', {}, h('td', {}, x.date), h('td', {}, x.status === 'absent' ? chip('Absent', 'bad') : 'Present'), h('td', {}, x.late_min ? `Late ${x.late_min} min` : ''), h('td', {}, x.early_min ? `Left ${x.early_min} min early` : ''), h('td', {}, x.missing_checkout ? chip('Missing check-out', 'bad') : '')))))))); }

@@ -3,6 +3,7 @@ import { validateDeposit, checkDepositTarget, depositStmt } from './attendance.j
 import { rebuildEmployee, rebuildForTask, statusMap, activeState } from './engine.js';
 import { classify, applicableDeadline, deliveries } from './lib/timer.js';
 import { uuid } from './lib/crypto.js';
+import { checkDeposit } from './scriptcheck.js';
 import { writeClickUpStatus, writeClickUpComment } from './clickup.js';
 import { localDate, localMidnightMs } from './lib/time.js';
 
@@ -42,7 +43,8 @@ export async function createDeposit(ctx) {
     if (again) return json({ ok: true, id: again.id, duplicate: true });
     throw e;
   }
-  return json({ ok: true, id });
+  const check = await checkDeposit(env, { id, link: d.link }, emp.job_role, now);
+  return json({ ok: true, id, check });
 }
 
 export async function chooseActive(ctx) {
@@ -91,7 +93,7 @@ export async function submissions(ctx) {
   const days = Math.min(+url.searchParams.get('days') || 7, 92);
   const from = Date.now() - days * 86400000;
   const rows = (await env.DB.prepare(
-    `SELECT d.id,d.employee_id,e.name employee,d.created_at,d.link,d.completed,d.pending,d.is_complete,d.taskless_reason,d.review_note,d.task_id,t.name task_name,t.url task_url,t.status task_status
+    `SELECT d.id,d.employee_id,e.name employee,d.created_at,d.link,d.completed,d.pending,d.is_complete,d.taskless_reason,d.review_note,d.check_json,d.task_id,t.name task_name,t.url task_url,t.status task_status
        FROM deposits d JOIN employees e ON e.id=d.employee_id LEFT JOIN tasks t ON t.id=d.task_id
       WHERE d.employee_id IN (${inList(ids)}) AND d.created_at>=? ORDER BY d.created_at DESC LIMIT 300`).bind(...ids, from).all()).results;
   const rev = (await env.DB.prepare('SELECT id,task_id,notes,links,created_at,clickup_status FROM revisions ORDER BY created_at DESC LIMIT 300').all()).results;

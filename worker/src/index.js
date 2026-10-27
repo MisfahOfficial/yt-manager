@@ -6,6 +6,7 @@ import * as cl from './clickup.js';
 import * as rep from './reports.js';
 import * as adm from './admin.js';
 import { sweepMissingCheckouts } from './engine.js';
+import * as sc from './scriptcheck.js';
 
 const E = 'employee', M = 'manager', A = 'admin';
 // [method, path, handler, who]  who: 'public' | roles allowed
@@ -35,6 +36,7 @@ const ROUTES = [
   ['GET', '/api/team/tasks', work.teamTasks, [M, A]],
   ['POST', '/api/tasks/:id/changes', work.requestChanges, [M, A]],
   ['POST', '/api/deposits/:id/note', work.reviewNote, [M, A]],
+  ['POST', '/api/deposits/:id/recheck', sc.recheck, [E, M, A]],
   ['GET', '/api/reports', rep.getReport, [M, A]],
   ['GET', '/api/attendance', adm.attendanceList, [M, A]],
   ['POST', '/api/attendance', att.addMissingAttendance, [M, A]],

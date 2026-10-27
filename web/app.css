@@ -64,3 +64,4 @@ details.exception{border-top:1px solid var(--line);padding-top:8px}
 @media (max-width:640px){main{padding:12px}.top{padding:8px 12px}.who{width:100%;justify-content:space-between}.btn.xl{width:100%}.item{flex-direction:column}.item .right{text-align:left}}
 @media print{.top,.sub,.btn,.toast{display:none!important}body{background:#fff;color:#000}.card{break-inside:avoid;border-color:#999}}
 [hidden]{display:none!important}
+.checklist{list-style:none;padding:0;margin:6px 0}.checklist li.ok{color:var(--ok)}.checklist li.bad{color:var(--bad);font-weight:600}.checkbox{margin-top:6px}

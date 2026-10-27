@@ -192,8 +192,9 @@ export async function settingsPage(root, me) {
   const rep = h('section', { class: 'card' }, h('h2', {}, 'Reports'), h('label', { class: 'check' }, auto, ' Prepare the weekly and monthly reports automatically when a period ends'), h('p', { class: 'muted' }, 'Reports are shown in the app only. No daily report is made and nothing is emailed.'));
   const out = h('section', { class: 'card' }, h('h2', {}, 'Imported old records'), h('p', { class: 'muted' }, 'Paste the old app\'s exported data (JSON) to keep its history. Old passwords are never imported.'), importBox());
   const sm = await statusCard(s.settings);
+  const sck = scriptCheckCard(s.settings.script_checks, reload);
   const aud = h('section', { class: 'card' }, h('h2', {}, 'Audit history'), h('p', { class: 'muted' }, 'Every correction, approval and setting change.'), h('a', { class: 'btn', href: '#audit' }, 'Open audit history'));
-  root.replaceChildren(net, outage, cuCard, sm, shiftCard, rep, aud, out);
+  root.replaceChildren(net, outage, cuCard, sm, sck, shiftCard, rep, aud, out);
 }
 function teamPick(teams, onPick) {
   const sel = h('select', {}, teams.map((t) => h('option', { value: t.id }, t.name)));
@@ -256,4 +257,33 @@ async function statusCard(settings) {
   fillRoles('');
   await show('');
   return card;
+}
+
+const CHECK_TYPES = [['ref_images', 'Reference images (embedded or image links)'], ['links', 'Links'], ['images', 'Embedded images'], ['text', 'Must contain these words'], ['words', 'Minimum word count']];
+function scriptCheckCard(cfg, reload) {
+  const roles = h('input', { type: 'text', value: (cfg.roles || []).join(', '), placeholder: 'e.g. Writer' });
+  const rows = h('div', { class: 'stack' });
+  const rowEls = [];
+  const addRow = (r = { label: '', type: 'ref_images', min: 3, value: '' }) => {
+    const label = h('input', { type: 'text', value: r.label, placeholder: 'Check name, e.g. Reference images' });
+    const type = h('select', {}, CHECK_TYPES.map(([v, l]) => h('option', { value: v, selected: v === r.type }, l)));
+    const min = h('input', { type: 'number', min: 1, value: r.min ?? 1, 'aria-label': 'Minimum' });
+    const val = h('input', { type: 'text', value: r.value || '', placeholder: 'Words, comma separated (for "must contain" or to narrow links)' });
+    const del = h('button', { class: 'btn small', type: 'button' }, 'Remove');
+    const row = h('div', { class: 'item col' }, label, h('div', { class: 'row' }, type, min), val, del);
+    del.addEventListener('click', () => { row.remove(); rowEls.splice(rowEls.findIndex((x) => x.row === row), 1); });
+    rowEls.push({ row, label, type, min, val }); rows.append(row);
+  };
+  (cfg.rules || []).forEach(addRow);
+  const add = h('button', { class: 'btn', type: 'button', onclick: () => addRow() }, 'Add a check');
+  const save = h('button', { class: 'btn primary', type: 'button' }, 'Save script checks');
+  save.addEventListener('click', busy(save, async () => {
+    try {
+      await post('/api/admin/settings', { script_checks: { roles: roles.value.split(',').map((x) => x.trim()).filter(Boolean), rules: rowEls.map((r, i) => ({ id: 'r' + (i + 1), label: r.label.value, type: r.type.value, min: r.type.value === 'text' ? null : +r.min.value || 1, value: r.val.value })) } });
+      announce('Saved ✓'); reload();
+    } catch (e) { announce(e.message, 'err'); }
+  }));
+  return h('section', { class: 'card' }, h('h2', {}, 'Script check (Google Docs)'),
+    h('p', { class: 'muted' }, 'When someone with these jobs deposits a Google Doc link, the app reads the Doc and checks your list. It never blocks check-out; the result is shown to the writer, the manager and in reports. The Doc must be shared as "Anyone with the link can view".'),
+    h('div', { class: 'stack' }, field('Jobs that are checked', roles, 'Comma separated, same names as the Job field under People.'), rows, add, save));
 }
