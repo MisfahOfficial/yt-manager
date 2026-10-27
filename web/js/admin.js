@@ -27,9 +27,10 @@ export async function peoplePage(root, me) {
   const card = h('section', { class: 'card' }, h('div', { class: 'row between' }, h('h2', {}, 'People'),
     (() => { const b = h('button', { class: 'btn primary', type: 'button' }, 'Add person'); b.addEventListener('click', () => personDialog(null, emps, () => peoplePage(root, me))); return b; })()));
   const shiftName = (id) => shifts.find((s) => s.id === id)?.name || '—';
-  card.append(h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Name', 'Role', 'Computer', 'Shift', 'ClickUp', ''].map((x) => h('th', {}, x)))),
+  card.append(h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Name', 'Access', 'Job', 'Computer', 'Shift', 'ClickUp', ''].map((x) => h('th', {}, x)))),
     h('tbody', {}, emps.map((e) => h('tr', { class: e.active ? '' : 'off' }, h('td', {}, h('strong', {}, e.name), h('div', { class: 'muted small' }, e.email)),
       h('td', {}, e.role === 'admin' ? 'Owner/Admin' : e.role === 'manager' ? 'Manager' : 'Employee', e.can_correct ? chip('Can correct') : null, !e.active ? chip('Inactive', 'warn') : null),
+      h('td', {}, e.job_role || chip('Not set', 'warn')),
       h('td', {}, e.device === 'approved' ? chip('Approved', 'ok') : e.device === 'pending' ? chip('Waiting', 'warn') : chip('None')),
       h('td', {}, shiftName([...e.shifts].reverse().find((s) => !s.effective_to)?.shift_id)),
       h('td', {}, e.clickup_user_id ? chip('Linked', 'ok') : chip('Not linked', 'warn')),
@@ -41,6 +42,8 @@ async function personDialog(e, emps, done, shifts = []) {
   const isNew = !e;
   const name = h('input', { type: 'text', required: true, maxlength: 100, value: e?.name || '' });
   const email = h('input', { type: 'email', required: true, value: e?.email || '' });
+  const jobRole = h('input', { type: 'text', list: 'jobroles', maxlength: 40, value: e?.job_role || '', placeholder: 'e.g. Editor, Writer, Designer, Title finder' });
+  const jobList = h('datalist', { id: 'jobroles' }, ['Editor', 'Writer', 'Designer', 'Title finder', 'Voice-over', 'Uploader'].map((x) => h('option', { value: x })));
   const role = h('select', {}, [['employee', 'Employee'], ['manager', 'Manager'], ['admin', 'Owner/Admin']].map(([v, l]) => h('option', { value: v, selected: e?.role === v }, l)));
   const mgr = h('select', {}, h('option', { value: '' }, 'No manager'), emps.filter((x) => x.role !== 'employee' && x.id !== e?.id).map((x) => h('option', { value: x.id, selected: e?.manager_id === x.id }, x.name)));
   const canFix = h('input', { type: 'checkbox', checked: !!e?.can_correct });
@@ -49,14 +52,14 @@ async function personDialog(e, emps, done, shifts = []) {
   let members = []; try { const r = await get('/api/admin/clickup/members'); members = r.teams.flatMap((t) => t.members); } catch {}
   const cuPick = members.length ? h('select', {}, h('option', { value: '' }, 'Pick from ClickUp…'), members.map((m) => h('option', { value: m.id }, `${m.name} (${m.email})`))) : null;
   if (cuPick) cuPick.addEventListener('change', () => { if (cuPick.value) cu.value = cuPick.value; });
-  const body = h('div', { class: 'stack' }, field('Name', name), field('Email (used to sign in)', email), field('Role', role), field('Manager', mgr),
+  const body = h('div', { class: 'stack' }, field('Name', name), field('Email (used to sign in)', email), field('Job (what they do)', jobRole, 'Decides how their ClickUp statuses are read.'), jobList, field('Access level', role), field('Manager', mgr),
     h('label', { class: 'check' }, canFix, ' May correct attendance (managers only)'),
     field('ClickUp account', cu, 'Links this person to their ClickUp tasks.'), cuPick, !isNew ? h('label', { class: 'check' }, active, ' Can sign in') : null);
   dialog(isNew ? 'Add person' : e.name, body, (close) => {
     const save = h('button', { class: 'btn primary', type: 'button' }, isNew ? 'Add' : 'Save');
     save.addEventListener('click', busy(save, async () => {
       try {
-        const payload = { name: name.value, email: email.value, role: role.value, manager_id: mgr.value || null, can_correct: canFix.checked, clickup_user_id: cu.value.trim() || null, active: active.checked };
+        const payload = { name: name.value, email: email.value, role: role.value, job_role: jobRole.value.trim() || null, manager_id: mgr.value || null, can_correct: canFix.checked, clickup_user_id: cu.value.trim() || null, active: active.checked };
         if (isNew) { const r = await post('/api/admin/employees', payload); close(); secretDialog('Person added', name.value, r.temp_password, email.value.trim().toLowerCase()); }
         else { await post('/api/admin/employees/' + e.id, payload); announce('Saved ✓'); close(); }
         done();
@@ -188,7 +191,7 @@ export async function settingsPage(root, me) {
   auto.addEventListener('change', () => save({ auto_reports: auto.checked }));
   const rep = h('section', { class: 'card' }, h('h2', {}, 'Reports'), h('label', { class: 'check' }, auto, ' Prepare the weekly and monthly reports automatically when a period ends'), h('p', { class: 'muted' }, 'Reports are shown in the app only. No daily report is made and nothing is emailed.'));
   const out = h('section', { class: 'card' }, h('h2', {}, 'Imported old records'), h('p', { class: 'muted' }, 'Paste the old app\'s exported data (JSON) to keep its history. Old passwords are never imported.'), importBox());
-  const sm = await statusCard(s.settings.status_map);
+  const sm = await statusCard(s.settings);
   const aud = h('section', { class: 'card' }, h('h2', {}, 'Audit history'), h('p', { class: 'muted' }, 'Every correction, approval and setting change.'), h('a', { class: 'btn', href: '#audit' }, 'Open audit history'));
   root.replaceChildren(net, outage, cuCard, sm, shiftCard, rep, aud, out);
 }
@@ -223,18 +226,34 @@ export async function auditPage(root) {
 }
 
 const CLASSES = [['other', 'Not timed'], ['active', 'Timed work (In Progress)'], ['revision', 'Revision work (timed)'], ['paused', 'Blocked / on hold (paused)'], ['done', 'Finished (Ready for Upload)'], ['ignore', 'Ignore (not our step, e.g. payment)']];
-async function statusCard(overrides) {
+async function statusCard(settings) {
   const card = h('section', { class: 'card' }, h('h2', {}, 'ClickUp status names'),
-    h('p', { class: 'muted' }, 'Tell the app what each of your ClickUp statuses means. Only "Timed work" statuses start the timer; "Finished" stops it and records delivery.'));
-  let r; try { r = await get('/api/admin/statuses'); } catch (e) { card.append(errBox(e)); return card; }
-  if (!r.statuses.length) { card.append(empty('Statuses appear here after the first ClickUp sync.')); return card; }
-  const sels = r.statuses.map((x) => ({ x, el: h('select', {}, CLASSES.map(([v, l]) => h('option', { value: v, selected: v === x.class }, l))) }));
-  card.append(h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['ClickUp status', 'Tasks', 'Means'].map((t) => h('th', {}, t)))),
-    h('tbody', {}, sels.map(({ x, el }) => h('tr', {}, h('td', {}, x.status), h('td', {}, String(x.count)), h('td', {}, el)))))));
-  const b = h('button', { class: 'btn primary', type: 'button' }, 'Save status meanings');
-  b.addEventListener('click', busy(b, async () => {
-    try { await post('/api/admin/settings', { status_map: { ...overrides, ...Object.fromEntries(sels.map(({ x, el }) => [x.status, el.value])) } }); announce('Saved ✓ Recorded time was recalculated.'); } catch (e) { announce(e.message, 'err'); }
-  }));
-  card.append(b);
+    h('p', { class: 'muted' }, 'Tell the app what each ClickUp status means. Writers, designers and title finders can each have their own meaning for a status (for example "script done" is Finished for a writer). "Everyone" is the default; a job role only changes the ones you set for it.'));
+  const body = h('div', {});
+  const rolePick = h('select', { 'aria-label': 'Job role' });
+  card.append(field('For', rolePick), body);
+  let roles = [];
+  async function show(role) {
+    body.replaceChildren(h('p', { class: 'muted' }, 'Loading…'));
+    let r; try { r = await get('/api/admin/statuses' + (role ? '?role=' + encodeURIComponent(role) : '')); } catch (e) { body.replaceChildren(errBox(e)); return; }
+    if (!r.statuses.length) { body.replaceChildren(empty('Statuses appear here after the first ClickUp sync of the people with this job role.')); return; }
+    const sels = r.statuses.map((x) => ({ x, el: h('select', {}, CLASSES.map(([v, l]) => h('option', { value: v, selected: v === x.class }, l))) }));
+    const save = h('button', { class: 'btn primary', type: 'button' }, role ? `Save for ${role}` : 'Save for everyone');
+    save.addEventListener('click', busy(save, async () => {
+      const chosen = Object.fromEntries(sels.map(({ x, el }) => [x.status, el.value]));
+      try {
+        if (role) await post('/api/admin/settings', { role_status_maps: { ...(settings.role_status_maps || {}), [role.toLowerCase()]: { ...((settings.role_status_maps || {})[role.toLowerCase()] || {}), ...chosen } } });
+        else await post('/api/admin/settings', { status_map: { ...(settings.status_map || {}), ...chosen } });
+        announce('Saved ✓ Recorded time was recalculated.');
+      } catch (e) { announce(e.message, 'err'); }
+    }));
+    body.replaceChildren(h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['ClickUp status', 'Tasks', 'Means'].map((t) => h('th', {}, t)))),
+      h('tbody', {}, sels.map(({ x, el }) => h('tr', {}, h('td', {}, x.status), h('td', {}, String(x.count)), h('td', {}, el)))))), save);
+    if (!roles.length && r.roles.length) { roles = r.roles; fillRoles(role); }
+  }
+  const fillRoles = (cur) => { rolePick.replaceChildren(h('option', { value: '' }, 'Everyone (default)'), ...roles.map((x) => h('option', { value: x, selected: x === cur }, x))); };
+  rolePick.addEventListener('change', () => show(rolePick.value));
+  fillRoles('');
+  await show('');
   return card;
 }

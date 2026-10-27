@@ -19,6 +19,7 @@ export async function teamPage(root, me) {
     const [label, kind] = ATT[p.attendance];
     grid.append(h('section', { class: 'card person' },
       h('div', { class: 'row between' }, h('h3', {}, p.name), chip(label, kind)),
+      p.job_role ? h('p', { class: 'muted small' }, p.job_role) : null,
       p.since && p.attendance === 'checked_in' ? h('p', { class: 'muted' }, 'Since ' + fmtTime(p.since)) : null,
       p.active_task ? h('p', {}, 'Working on: ', h('a', { href: p.active_task.url || '#', target: '_blank', rel: 'noopener noreferrer' }, p.active_task.name || p.active_task.id), p.active_task.kind === 'revision' ? chip('Revision', 'warn') : null)
         : h('p', { class: 'muted' }, p.clickup_linked ? 'No timed task right now' : 'Not linked to ClickUp'),
@@ -113,6 +114,7 @@ export async function reportsPage(root, me) {
   for (const e of r.employees) body.push(employeeBlock(e, r.kind));
   if (r.kind === 'monthly') {
     if (r.repeated_blockers?.length) body.push(h('section', { class: 'card' }, h('h2', {}, 'Repeated blockers'), h('ul', {}, r.repeated_blockers.map((b) => h('li', {}, `Task ${b.task_id}: blocked ${b.times} times`)))));
+    if (r.by_role) body.push(h('section', { class: 'card' }, h('h2', {}, 'By job'), h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Job', 'People', 'Finished', 'On time / late', 'Original time', 'Revision time'].map((x) => h('th', {}, x)))), h('tbody', {}, Object.entries(r.by_role).map(([k, v]) => h('tr', {}, h('td', {}, k), h('td', {}, String(v.people)), h('td', {}, String(v.delivered)), h('td', {}, `${v.on_time} / ${v.overdue}`), h('td', {}, fmtDur(v.original_ms)), h('td', {}, fmtDur(v.revision_ms)))))))));
     body.push(h('section', { class: 'card' }, h('h2', {}, 'Review notes'), r.review_notes.map((n) => h('div', {}, h('strong', {}, n.employee), n.notes.length ? h('ul', {}, n.notes.map((x) => h('li', {}, x))) : h('p', { class: 'muted' }, 'Nothing to discuss from the data.')))));
   }
   body.push(h('p', { class: 'muted small' }, r.notes.join(' '), ` Generated ${fmtDateTime(r.generated_at)}.`));
@@ -121,7 +123,7 @@ export async function reportsPage(root, me) {
 const stat = (l, v) => h('div', { class: 'stat' }, h('div', { class: 'v' }, String(v)), h('div', { class: 'l' }, l));
 function employeeBlock(e, kind) {
   const a = e.attendance, d = e.delivery;
-  return h('details', { class: 'card emp' }, h('summary', {}, h('strong', {}, e.employee.name), ` — ${a.present_days}/${a.scheduled_days} days, ${d.delivered} Ready for Upload`),
+  return h('details', { class: 'card emp' }, h('summary', {}, h('strong', {}, e.employee.name), e.employee.job_role ? ` (${e.employee.job_role})` : '', ` — ${a.present_days}/${a.scheduled_days} days, ${d.delivered} Ready for Upload`),
     e.warnings.map((w) => h('div', { class: 'warnbox' }, w)),
     h('div', { class: 'stats' }, stat('Leave days', a.approved_leave_days), stat('Unexplained absence', a.unexplained_absence_days), stat('Late arrivals', `${a.late_arrivals} (${a.late_minutes} min)`), stat('Early departures', `${a.early_departures} (${a.early_minutes} min)`),
       stat('Missing check-outs', a.missing_checkouts), stat('Corrected days', a.corrected_days), stat('Work deposits', e.deposits.count), stat('Days without deposit', e.deposits.missing_days),

@@ -18,7 +18,7 @@ const inList = (ids) => ids.map(() => '?').join(',') || "''";
 export async function myTasks(ctx) {
   const { env, emp } = ctx;
   if (!emp.clickup_user_id) return json({ tasks: [], linked: false });
-  const map = await statusMap(env.DB);
+  const map = await statusMap(env.DB, emp.job_role);
   const rows = (await env.DB.prepare(
     `SELECT t.id,t.name,t.url,t.status,t.priority,t.due_ms FROM tasks t JOIN task_assignees ta ON ta.task_id=t.id
        WHERE ta.clickup_user_id=? AND ta.end_ms IS NULL AND t.deleted=0 ORDER BY t.due_ms IS NULL, t.due_ms LIMIT 200`).bind(emp.clickup_user_id).all()).results;
@@ -61,18 +61,19 @@ export async function teamOverview(ctx) {
   const { env, now } = ctx;
   const ids = await teamIds(ctx);
   const dayStart = localMidnightMs(localDate(now));
-  const map = await statusMap(env.DB);
-  const people = (await env.DB.prepare(`SELECT id,name,role,clickup_user_id FROM employees WHERE id IN (${inList(ids)}) AND (role<>'admin' OR id=?)`).bind(...ids, ctx.emp.id).all()).results;
+  const maps = new Map();
+  const people = (await env.DB.prepare(`SELECT id,name,role,job_role,clickup_user_id FROM employees WHERE id IN (${inList(ids)}) AND (role<>'admin' OR id=?)`).bind(...ids, ctx.emp.id).all()).results;
   const out = [];
   for (const p of people) {
+    const pmap = await statusMap(env.DB, p.job_role);
     const open = await env.DB.prepare("SELECT id,check_in_at,status FROM attendance WHERE employee_id=? AND status IN ('open','missing_checkout') ORDER BY check_in_at DESC LIMIT 1").bind(p.id).first();
     const sess = await env.DB.prepare('SELECT s.task_id,s.kind,s.start_ms,t.name,t.url FROM task_sessions s LEFT JOIN tasks t ON t.id=s.task_id WHERE s.employee_id=? AND s.end_ms IS NULL').bind(p.id).first();
     const dep = await env.DB.prepare('SELECT COUNT(*) n FROM deposits WHERE employee_id=? AND created_at>=?').bind(p.id, dayStart).first();
     const todayAtt = await env.DB.prepare('SELECT COUNT(*) n FROM attendance WHERE employee_id=? AND check_in_at>=?').bind(p.id, dayStart).first();
     const blocked = p.clickup_user_id ? (await env.DB.prepare(
-      `SELECT t.id,t.name,t.url,t.status FROM tasks t JOIN task_assignees ta ON ta.task_id=t.id WHERE ta.clickup_user_id=? AND ta.end_ms IS NULL AND t.deleted=0`).bind(p.clickup_user_id).all()).results.filter((t) => classify(t.status, map) === 'paused') : [];
+      `SELECT t.id,t.name,t.url,t.status FROM tasks t JOIN task_assignees ta ON ta.task_id=t.id WHERE ta.clickup_user_id=? AND ta.end_ms IS NULL AND t.deleted=0`).bind(p.clickup_user_id).all()).results.filter((t) => classify(t.status, pmap) === 'paused') : [];
     out.push({
-      id: p.id, name: p.name,
+      id: p.id, name: p.name, job_role: p.job_role,
       attendance: open ? (open.status === 'open' ? 'checked_in' : 'missing_checkout') : todayAtt.n ? 'done_for_today' : 'not_in',
       since: open?.check_in_at || null,
       active_task: sess ? { id: sess.task_id, name: sess.name, url: sess.url, kind: sess.kind, since: sess.start_ms } : null,

@@ -10,7 +10,7 @@ import { clientIp } from './attendance.js';
 import { teamIds } from './work.js';
 
 const ROLES = ['employee', 'manager', 'admin'];
-const pub = (e) => ({ id: e.id, name: e.name, email: e.email, role: e.role, can_correct: !!e.can_correct, manager_id: e.manager_id, active: !!e.active, clickup_user_id: e.clickup_user_id, must_change_pw: !!e.must_change_pw });
+const pub = (e) => ({ id: e.id, name: e.name, email: e.email, role: e.role, job_role: e.job_role, can_correct: !!e.can_correct, manager_id: e.manager_id, active: !!e.active, clickup_user_id: e.clickup_user_id, must_change_pw: !!e.must_change_pw });
 
 export async function listEmployees(ctx) {
   const rows = (await ctx.env.DB.prepare('SELECT * FROM employees ORDER BY active DESC, name').all()).results;
@@ -31,8 +31,8 @@ export async function createEmployee(ctx) {
   const id = uuid();
   try {
     await env.DB.batch([
-      env.DB.prepare('INSERT INTO employees(id,name,email,role,manager_id,pw_hash,pw_salt,pw_iter,must_change_pw,clickup_user_id,created_at) VALUES (?,?,?,?,?,?,?,?,1,?,?)')
-        .bind(id, name, email, role, body.manager_id || null, rec.pw_hash, rec.pw_salt, rec.pw_iter, body.clickup_user_id ? String(body.clickup_user_id) : null, now),
+      env.DB.prepare('INSERT INTO employees(id,name,email,role,job_role,manager_id,pw_hash,pw_salt,pw_iter,must_change_pw,clickup_user_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,1,?,?)')
+        .bind(id, name, email, role, str(body.job_role, 'job role', { optional: true, max: 40 }), body.manager_id || null, rec.pw_hash, rec.pw_salt, rec.pw_iter, body.clickup_user_id ? String(body.clickup_user_id) : null, now),
       auditStmt(env.DB, { at: now, actor: emp.id, action: 'employee_created', entity: 'employee', entityId: id, after: { name, email, role } }),
     ]);
   } catch (e) { if (String(e.message).includes('UNIQUE')) throw conflict('duplicate', 'That email or ClickUp user is already used.'); throw e; }
@@ -47,6 +47,7 @@ export async function updateEmployee(ctx) {
   if (body.name != null) next.name = str(body.name, 'name', { max: 100 });
   if (body.email != null) { next.email = str(body.email, 'email', { max: 200 }).toLowerCase(); if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(next.email)) throw bad('invalid_email', 'Email is not valid.'); }
   if (body.role != null) { if (!ROLES.includes(body.role)) throw bad('invalid_role'); next.role = body.role; }
+  if (body.job_role !== undefined) next.job_role = str(body.job_role, 'job role', { optional: true, max: 40 });
   if (body.can_correct != null) next.can_correct = body.can_correct ? 1 : 0;
   if (body.manager_id !== undefined) next.manager_id = body.manager_id || null;
   if (body.clickup_user_id !== undefined) next.clickup_user_id = body.clickup_user_id ? String(body.clickup_user_id) : null;
@@ -54,7 +55,7 @@ export async function updateEmployee(ctx) {
   if (before.id === emp.id && (next.role !== 'admin' || !next.active)) throw bad('self_lockout', 'You cannot remove your own admin access.');
   if (next.manager_id === before.id) throw bad('bad_manager', 'Someone cannot manage themselves.');
   const stmts = [
-    env.DB.prepare('UPDATE employees SET name=?,email=?,role=?,can_correct=?,manager_id=?,clickup_user_id=?,active=? WHERE id=?').bind(next.name, next.email, next.role, next.can_correct, next.manager_id, next.clickup_user_id, next.active, before.id),
+    env.DB.prepare('UPDATE employees SET name=?,email=?,role=?,job_role=?,can_correct=?,manager_id=?,clickup_user_id=?,active=? WHERE id=?').bind(next.name, next.email, next.role, next.job_role, next.can_correct, next.manager_id, next.clickup_user_id, next.active, before.id),
     auditStmt(env.DB, { at: now, actor: emp.id, action: 'employee_updated', entity: 'employee', entityId: before.id, before: pub(before), after: pub(next) }),
   ];
   if (!next.active) stmts.push(env.DB.prepare('DELETE FROM sessions WHERE employee_id=?').bind(before.id));
@@ -171,10 +172,16 @@ const SETTING_KEYS = {
   revisions_status: (v) => (v ? str(v, 'status', { max: 60 }) : null),
   status_map: (v) => { if (!v || typeof v !== 'object') throw bad('bad_map'); const ok = ['active', 'revision', 'paused', 'done', 'other', 'ignore']; for (const [k, c] of Object.entries(v)) if (!ok.includes(c) || k.length > 60) throw bad('bad_map', 'Status mapping is not valid.'); return Object.fromEntries(Object.entries(v).map(([k, c]) => [k.toLowerCase().trim(), c])); },
   auto_reports: (v) => !!v,
+  role_status_maps: (v) => {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) throw bad('bad_map');
+    const out = {};
+    for (const [role, m] of Object.entries(v)) { if (role.length > 40) throw bad('bad_map'); out[role.toLowerCase().trim()] = SETTING_KEYS.status_map(m); }
+    return out;
+  },
 };
 export async function getSettings(ctx) {
   const out = {};
-  for (const k of Object.keys(SETTING_KEYS)) out[k] = await getSetting(ctx.env.DB, k, k === 'sync_time_min' ? 1110 : k === 'office_ips' ? [] : k === 'status_map' ? {} : k === 'auto_reports' ? true : null);
+  for (const k of Object.keys(SETTING_KEYS)) out[k] = await getSetting(ctx.env.DB, k, k === 'sync_time_min' ? 1110 : k === 'office_ips' ? [] : k === 'status_map' ? {} : k === 'auto_reports' ? true : k === 'role_status_maps' ? {} : null);
   return json({ settings: out, detected_ip: clientIp(ctx.req) });
 }
 export async function putSettings(ctx) {
@@ -189,14 +196,16 @@ export async function putSettings(ctx) {
   if (!stmts.length) throw bad('nothing', 'Nothing to save.');
   stmts.push(auditStmt(env.DB, { at: now, actor: emp.id, action: 'settings_changed', entity: 'settings', before: Object.fromEntries(Object.entries(changed).map(([k, c]) => [k, c.before])), after: Object.fromEntries(Object.entries(changed).map(([k, c]) => [k, c.after])) }));
   await env.DB.batch(stmts);
-  if (changed.status_map) await rebuildLinked(env, now); // new status meanings change recorded time
+  if (changed.status_map || changed.role_status_maps) await rebuildLinked(env, now); // new status meanings change recorded time
   return json({ ok: true });
 }
 
 export async function statusList(ctx) {
-  const map = await statusMap(ctx.env.DB);
+  const role = ctx.url.searchParams.get('role') || null;
+  const map = await statusMap(ctx.env.DB, role);
   const rows = (await ctx.env.DB.prepare('SELECT lower(status) s, COUNT(*) n FROM tasks WHERE status IS NOT NULL AND deleted=0 GROUP BY lower(status) ORDER BY n DESC').all()).results;
-  return json({ statuses: rows.map((r) => ({ status: r.s, count: r.n, class: classify(r.s, map) })) });
+  const roles = (await ctx.env.DB.prepare("SELECT DISTINCT job_role r FROM employees WHERE job_role IS NOT NULL AND job_role<>'' ORDER BY 1").all()).results.map((x) => x.r);
+  return json({ statuses: rows.map((r) => ({ status: r.s, count: r.n, class: classify(r.s, map) })), roles });
 }
 
 // ---- network outage exception (time-boxed, audited, never silent) ----

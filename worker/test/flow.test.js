@@ -333,3 +333,37 @@ describe('custom ClickUp status names', () => {
     expect(classify('rendered')).toBe('done');
   });
 });
+
+describe('job roles (writer / designer / title finder)', () => {
+  it('each job role reads ClickUp statuses with its own meaning; others are unaffected', async () => {
+    const tue = at(0) + 8 * 24 * H; // Tuesday 2026-11-03
+    const T = (h, m = 0) => tue + h * H + m * M;
+    setNow(T(19));
+    const wr = await makeEmployee(admin, 'Wanda', { job_role: 'Writer', clickup_user_id: '777', manager_id: mgr.id });
+    await giveShift(admin, wr.id, { start: 9 * 60, end: 17 * 60, days: 0b0011111 });
+    const me = await admin.get('/api/admin/employees');
+    expect(me.data.employees.find((e) => e.id === wr.id).job_role).toBe('Writer');
+    const save = await admin.post('/api/admin/settings', { role_status_maps: { writer: { writing: 'active', 'script done': 'done' } } });
+    expect(save.status).toBe(200);
+    await env.DB.prepare("INSERT INTO attendance(id,employee_id,request_id,check_in_at,check_out_at,status) VALUES ('att-w',?,'req-w',?,?,'closed')").bind(wr.id, T(9), T(17)).run();
+    await hook(whPayload('taskAssigneeUpdated', 'W1', [item('w0', 'assignee_add', T(8), null, { id: 777 })]));
+    await hook(whPayload('taskStatusUpdated', 'W1', [item('w1', 'status', T(10), { status: 'to do' }, { status: 'Writing' })]));
+    await hook(whPayload('taskStatusUpdated', 'W1', [item('w2', 'status', T(13), { status: 'Writing' }, { status: 'Script Done' })]));
+    const s = (await env.DB.prepare("SELECT start_ms,end_ms,end_reason FROM task_sessions WHERE employee_id=? AND task_id='W1'").bind(wr.id).all()).results;
+    expect(s.map((x) => [x.start_ms, x.end_ms, x.end_reason])).toEqual([[T(10), T(13), 'ready_for_upload']]);
+    // same statuses mean nothing for someone with no job role mapping
+    const { statusMap } = await import('../src/engine.js');
+    const { classify } = await import('../src/lib/timer.js');
+    expect(classify('writing', await statusMap(env.DB, 'Writer'))).toBe('active');
+    expect(classify('writing', await statusMap(env.DB, 'Designer'))).toBe('other');
+    expect(classify('writing', await statusMap(env.DB, null))).toBe('other');
+    const rep = (await admin.get('/api/reports?kind=monthly&period=2026-11')).data;
+    const w = rep.employees.find((e) => e.employee.id === wr.id);
+    expect(w.employee.job_role).toBe('Writer');
+    expect(w.delivery.delivered).toBe(1);
+    expect(rep.by_role.Writer.delivered).toBe(1);
+    expect(rep.by_role.Writer.original_ms).toBe(3 * H);
+    expect((await ali.post('/api/admin/settings', { role_status_maps: {} })).status).toBe(403);
+    expect((await admin.post('/api/admin/settings', { role_status_maps: { writer: { x: 'nonsense' } } })).status).toBe(400);
+  });
+});

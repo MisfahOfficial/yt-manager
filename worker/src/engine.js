@@ -26,13 +26,17 @@ export function attendanceEnd(a, windows, now) {
   return now;
 }
 
-export async function statusMap(db) {
-  return { ...DEFAULT_STATUS_MAP, ...(await getSetting(db, 'status_map', {})) };
+// Status meanings: built-ins < workspace-wide overrides < overrides for this person's job role.
+export async function statusMap(db, jobRole = null) {
+  const base = { ...DEFAULT_STATUS_MAP, ...(await getSetting(db, 'status_map', {})) };
+  if (!jobRole) return base;
+  const per = await getSetting(db, 'role_status_maps', {});
+  return { ...base, ...(per[String(jobRole).toLowerCase()] || {}) };
 }
 
 export async function rebuildEmployee(env, employeeId, sinceMs, now = Date.now()) {
   const db = env.DB;
-  const emp = await db.prepare('SELECT id,clickup_user_id FROM employees WHERE id=?').bind(employeeId).first();
+  const emp = await db.prepare('SELECT id,clickup_user_id,job_role FROM employees WHERE id=?').bind(employeeId).first();
   if (!emp) return;
   const since = localMidnightMs(addDays(localDate(Math.min(sinceMs, now)), -1));
   const ctxShift = await loadShiftContext(db, employeeId, since, now + 86400000);
@@ -40,7 +44,7 @@ export async function rebuildEmployee(env, employeeId, sinceMs, now = Date.now()
     `SELECT * FROM attendance WHERE employee_id=? AND (check_out_at IS NULL OR check_out_at>?) AND check_in_at<=?`).bind(employeeId, since, now).all()).results;
   const attendance = attRows.map((a) => ({ start: a.check_in_at, end: attendanceEnd(a, ctxShift.windows, now), open: a.status === 'open' }));
   const windows = [...ctxShift.windows, ...ctxShift.overtime];
-  const map = await statusMap(db);
+  const map = await statusMap(db, emp.job_role);
 
   const tasks = [];
   if (emp.clickup_user_id) {

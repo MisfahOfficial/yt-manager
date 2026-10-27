@@ -102,7 +102,7 @@ export async function employeeReport(env, emp, kind, period, now, map) {
 
   const incomplete = toMs > now;
   return {
-    employee: { id: emp.id, name: emp.name },
+    employee: { id: emp.id, name: emp.name, job_role: emp.job_role || null },
     incomplete_period: incomplete, warnings: warn,
     attendance: { scheduled_days: scheduled, present_days: present, approved_leave_days: leaveDays, unexplained_absence_days: absent, late_arrivals: lateCount, late_minutes: lateMin, early_departures: earlyCount, early_minutes: earlyMin, missing_checkouts: missingCo, corrected_days: corrected, days },
     deposits: { count: deps.length, missing_days: missingDeposits, checkout_exceptions: exceptions },
@@ -124,16 +124,17 @@ function rollup(list) {
 }
 
 export async function buildReport(env, ids, kind, period, now) {
-  const map = await statusMap(env.DB);
-  const emps = ids.length ? (await env.DB.prepare(`SELECT id,name,clickup_user_id FROM employees WHERE id IN (${ids.map(() => '?').join(',')}) AND role<>'admin' AND active=1 ORDER BY name`).bind(...ids).all()).results : [];
+  const emps = ids.length ? (await env.DB.prepare(`SELECT id,name,job_role,clickup_user_id FROM employees WHERE id IN (${ids.map(() => '?').join(',')}) AND role<>'admin' AND active=1 ORDER BY name`).bind(...ids).all()).results : [];
   const rows = [];
-  for (const e of emps) rows.push(await employeeReport(env, e, kind, period, now, map));
+  const maps = new Map(); // one map per job role
+  const mapFor = async (e) => { const k = e.job_role || ''; if (!maps.has(k)) maps.set(k, await statusMap(env.DB, e.job_role)); return maps.get(k); };
+  for (const e of emps) rows.push(await employeeReport(env, e, kind, period, now, await mapFor(e)));
   const out = { kind, period, range: periodRange(kind, period), generated_at: now, incomplete_period: rows.some((r) => r.incomplete_period), employees: rows, totals: rollup(rows),
     notes: ['No automatic pay, raise or disciplinary decisions are made from this report.', 'Employees are not ranked: shifts and video complexity differ.'] };
   if (kind === 'monthly') {
     const pp = prevPeriod(kind, period);
     const prevRows = [];
-    for (const e of emps) prevRows.push(await employeeReport(env, e, kind, pp, now, map));
+    for (const e of emps) prevRows.push(await employeeReport(env, e, kind, pp, now, await mapFor(e)));
     const pt = rollup(prevRows);
     const comparable = pt.scheduled_days > 0 && out.totals.scheduled_days > 0;
     out.previous = { period: pp, totals: pt, comparable, comparable_note: comparable ? 'Compare per scheduled day; month lengths and shifts differ.' : 'Not comparable (no scheduled days in one of the months).' };
@@ -143,6 +144,9 @@ export async function buildReport(env, ids, kind, period, now) {
     const byCh = {};
     for (const r of rows) for (const t of r.delivery.tasks) { const c = (byCh[t.channel] ||= { delivered: 0, on_time: 0, overdue: 0 }); c.delivered++; if (t.on_time === true) c.on_time++; if (t.on_time === false) c.overdue++; }
     out.by_channel = byCh;
+    const byRole = {};
+    for (const r of rows) { const k = r.employee.job_role || 'No job role set'; const c = (byRole[k] ||= { people: 0, delivered: 0, on_time: 0, overdue: 0, original_ms: 0, revision_ms: 0 }); c.people++; c.delivered += r.delivery.delivered; c.on_time += r.delivery.on_time; c.overdue += r.delivery.overdue; c.original_ms += r.recorded_time.original_ms; c.revision_ms += r.recorded_time.revision_ms; }
+    out.by_role = byRole;
     out.review_notes = rows.map((r) => ({ employee: r.employee.name, notes: [
       ...(r.attendance.unexplained_absence_days ? ['Discuss attendance: unexplained absences'] : []),
       ...(r.delivery.overdue ? ['Discuss workload / deadlines: late deliveries (check documented upstream delays first)'] : []),

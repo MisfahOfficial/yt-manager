@@ -29,7 +29,7 @@ export async function loadSession(ctx) {
   if (!tok || !/^[0-9a-f]{64}$/.test(tok)) return null;
   const h = await sha256Hex(tok);
   const row = await ctx.env.DB.prepare(
-    `SELECT e.id,e.name,e.email,e.role,e.can_correct,e.manager_id,e.must_change_pw,e.clickup_user_id,e.active,s.expires_at
+    `SELECT e.id,e.name,e.email,e.role,e.job_role,e.can_correct,e.manager_id,e.must_change_pw,e.clickup_user_id,e.active,s.expires_at
        FROM sessions s JOIN employees e ON e.id=s.employee_id WHERE s.token_hash=?`).bind(h).first();
   if (!row || row.expires_at < ctx.now || !row.active) return null;
   return row;

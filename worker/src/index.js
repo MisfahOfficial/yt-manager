@@ -15,7 +15,7 @@ const ROUTES = [
   ['POST', '/api/webhooks/clickup', cl.webhook, 'public', { raw: true }],
   ['GET', '/api/health', async (c) => json({ ok: true, needs_setup: !(await c.env.DB.prepare("SELECT 1 FROM employees WHERE role='admin'").first()) }), 'public'],
   ['POST', '/api/logout', auth.logout, [E, M, A]],
-  ['GET', '/api/me', (c) => json({ me: { id: c.emp.id, name: c.emp.name, email: c.emp.email, role: c.emp.role, can_correct: !!c.emp.can_correct, must_change_pw: !!c.emp.must_change_pw, clickup_linked: !!c.emp.clickup_user_id } }), [E, M, A]],
+  ['GET', '/api/me', (c) => json({ me: { id: c.emp.id, name: c.emp.name, email: c.emp.email, role: c.emp.role, job_role: c.emp.job_role, can_correct: !!c.emp.can_correct, must_change_pw: !!c.emp.must_change_pw, clickup_linked: !!c.emp.clickup_user_id } }), [E, M, A]],
   ['POST', '/api/password', auth.changePassword, [E, M, A]],
   ['GET', '/api/challenge', auth.issueChallenge, [E, M, A]],
   ['POST', '/api/device', auth.registerDevice, [E, M, A]],
