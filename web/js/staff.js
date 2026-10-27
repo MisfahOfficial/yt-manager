@@ -1,4 +1,4 @@
-import { h, get, post, api, checkView, field, dialog, busy, announce, chip, empty, errBox, fmtTime, fmtDate, fmtDateTime, fmtDur, uid, draft, localDevice, createLocalDevice, ApiError } from './core.js';
+import { h, get, post, api, checkView, checksSection, field, dialog, busy, announce, chip, empty, errBox, fmtTime, fmtDate, fmtDateTime, fmtDur, uid, draft, localDevice, createLocalDevice, ApiError } from './core.js';
 
 // One pending request id per action: a retry after a failed save reuses it, so the server can never double-record.
 const pendingId = (k) => { let v = sessionStorage.getItem('ytm-rid:' + k); if (!v) { v = uid(); sessionStorage.setItem('ytm-rid:' + k, v); } return v; };
@@ -171,7 +171,7 @@ export async function tasksPage(root, me) {
     h('div', {}, h('strong', {}, t.name), h('div', { class: 'muted' }, t.due_ms ? `Due ${fmtDate(t.due_ms)}` : 'No deadline')),
     h('div', { class: 'right' }, chip(t.status || '—', t.class === 'active' ? 'ok' : t.class === 'paused' ? 'warn' : t.class === 'revision' ? 'warn' : ''), ' ',
       t.url ? h('a', { href: t.url, target: '_blank', rel: 'noopener noreferrer' }, 'ClickUp') : null)));
-  root.replaceChildren(list);
+  root.replaceChildren(list, await checksSection('My script / title checks', () => tasksPage(root, me)));
 }
 
 export async function depositPage(root, me) {

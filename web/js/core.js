@@ -132,12 +132,13 @@ export async function syncUntilDone(onProgress) {
 
 const CHECK_TEXT = {
   not_a_doc: 'This link is not a Google Doc, so it could not be checked.',
+  clickup: 'ClickUp could not be read. Reconnect ClickUp in Settings.',
   private: 'The Google Doc is private. Set sharing to "Anyone with the link can view", then press Re-check.',
   not_found: 'That Google Doc was not found.',
   unreachable: 'Google did not answer. Press Re-check in a minute.',
 };
 // Shows the script-check result for a deposit (rows come from the server as check_json or an object).
-export function checkView(check, depositId, onChange) {
+export function checkView(check, depositId, onChange, path) {
   if (!check) return null;
   const c = typeof check === 'string' ? JSON.parse(check) : check;
   const box = h('div', { class: 'checkbox' });
@@ -148,8 +149,22 @@ export function checkView(check, depositId, onChange) {
   }
   if (depositId && onChange) {
     const b = h('button', { class: 'btn small', type: 'button' }, 'Re-check');
-    b.addEventListener('click', busy(b, async () => { try { await post(`/api/deposits/${depositId}/recheck`); announce('Checked again'); onChange(); } catch (e) { announce(e.message, 'err'); } }));
+    b.addEventListener('click', busy(b, async () => { try { await post(path || `/api/deposits/${depositId}/recheck`); announce('Checked again'); onChange(); } catch (e) { announce(e.message, 'err'); } }));
     box.append(b);
   }
   return box;
+}
+
+// "Finished work checks" block: latest script/title checks (own for employees, team for managers).
+export async function checksSection(title, onChange) {
+  const card = h('section', { class: 'card' }, h('h2', {}, title));
+  let r; try { r = await get('/api/checks?days=30'); } catch (e) { card.append(errBox(e)); return card; }
+  if (!r.checks.length) { card.append(empty('Nothing checked yet. It runs when a task reaches a Finished status (for example "ready to edit").')); return card; }
+  card.append(h('p', { class: 'muted' }, 'Checked automatically from the ClickUp task description and the linked Google Doc.'));
+  for (const c of r.checks) {
+    card.append(h('div', { class: 'item col' },
+      h('div', {}, h('strong', {}, c.employee), c.job_role ? ` (${c.job_role})` : '', ' · ', h('a', { href: c.task_url || '#', target: '_blank', rel: 'noopener noreferrer' }, c.task_name || c.task_id), ' ', h('span', { class: 'muted' }, fmtDateTime(c.checked_at))),
+      checkView(c.result, c.task_id, onChange, `/api/tasks/${encodeURIComponent(c.task_id)}/recheck`)));
+  }
+  return card;
 }

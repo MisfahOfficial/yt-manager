@@ -53,13 +53,16 @@ export async function employeeReport(env, emp, kind, period, now, map) {
   const missingDeposits = days.filter((d) => d.status === 'present' && !attDaysWithDeposit.has(d.date)).length;
   // script checks: latest result per Google Doc link
   const chk = (await db.prepare('SELECT id,link,check_json,created_at FROM deposits WHERE employee_id=? AND check_json IS NOT NULL AND created_at>=? AND created_at<? ORDER BY created_at').bind(emp.id, fromMs, toMs).all()).results;
-  const latest = new Map(chk.map((c) => [c.link, c]));
+  const latest = new Map(chk.map((c) => [c.link, { ...c, task_name: null }]));
+  const tchk = (await db.prepare('SELECT c.task_id,c.result_json check_json,t.name task_name,t.url FROM task_checks c LEFT JOIN tasks t ON t.id=c.task_id WHERE c.employee_id=? AND c.checked_at>=? AND c.checked_at<?').bind(emp.id, fromMs, toMs).all()).results;
+  for (const c of tchk) latest.set('task:' + c.task_id, { id: c.task_id, link: c.url, task_name: c.task_name, check_json: c.check_json });
   const scriptChecks = { checked: 0, passed: 0, failed: 0, unavailable: 0, by_rule: {}, failing: [] };
   for (const c of latest.values()) {
     const r = JSON.parse(c.check_json);
     if (r.status !== 'ok') { scriptChecks.unavailable++; continue; }
+    if (!r.items) continue;
     scriptChecks.checked++;
-    if (r.passed) scriptChecks.passed++; else { scriptChecks.failed++; scriptChecks.failing.push({ deposit_id: c.id, link: c.link, missing: r.items.filter((i) => !i.ok).map((i) => `${i.label} (${i.have}/${i.need})`) }); }
+    if (r.passed) scriptChecks.passed++; else { scriptChecks.failed++; scriptChecks.failing.push({ deposit_id: c.id, name: c.task_name, link: c.link, missing: r.items.filter((i) => !i.ok).map((i) => `${i.label} (${i.have}/${i.need})`) }); }
     for (const i of r.items) { const b = (scriptChecks.by_rule[i.label] ||= { passed: 0, total: 0 }); b.total++; if (i.ok) b.passed++; }
   }
   const exceptions = att.filter((a) => a.checkout_exception).length;
@@ -109,7 +112,7 @@ export async function employeeReport(env, emp, kind, period, now, map) {
   if (overdue) attention.push(`${overdue} delivery(ies) after the agreed deadline`);
   if (exceptions) attention.push(`${exceptions} check-out(s) done without a work deposit (technical exception)`);
   if (netEx) attention.push(`${netEx} attendance record(s) made under a network exception`);
-  if (scriptChecks.failed) attention.push(`${scriptChecks.failed} script(s) did not pass the script check`);
+  if (scriptChecks.failed) attention.push(`${scriptChecks.failed} item(s) did not pass the script/title check`);
   if (gapsOut.length) attention.push(`${gapsOut.length} ClickUp history gap(s): exact times unknown`);
 
   const incomplete = toMs > now;

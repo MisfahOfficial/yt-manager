@@ -2,6 +2,7 @@ import { HttpError, bad, forbidden, json, str, int, audit, auditStmt, getSetting
 import { hmacHex, timingSafeEqual, encryptSecret, decryptSecret, randomToken, sha256Hex } from './lib/crypto.js';
 import { rebuildForTask, rebuildEmployee, statusMap } from './engine.js';
 import { classify } from './lib/timer.js';
+import { runTaskChecks } from './scriptcheck.js';
 import { localDate, localMinutes } from './lib/time.js';
 
 const API = 'https://api.clickup.com/api/v2';
@@ -52,7 +53,10 @@ export async function webhook(ctx) {
   if (!timingSafeEqual(expected, sig.toLowerCase())) throw new HttpError(401, 'bad_signature', 'Signature mismatch.');
   let p; try { p = JSON.parse(ctx.rawBody); } catch { throw bad('bad_json'); }
   const res = await processWebhook(env, p, now);
-  if (res.taskId && res.changed) ctx.waitUntil?.(refreshTaskMeta(env, res.taskId).catch(() => {}));
+  if (res.taskId && res.changed) {
+    ctx.waitUntil?.(refreshTaskMeta(env, res.taskId).catch(() => {}));
+    if (res.statuses.length) ctx.waitUntil?.(runTaskChecks(env, res.taskId, res.statuses, now).catch((e) => console.error('task_check_failed', e)));
+  }
   return json({ ok: true, new_events: res.inserted });
 }
 
@@ -84,11 +88,11 @@ export async function processWebhook(env, p, now) {
       .bind(e.key, taskId, e.kind, e.at, now, 'webhook', e.from ?? null, e.to ?? null, e.actor ?? null).run();
     if (r.meta.changes) { inserted++; minAt = Math.min(minAt, e.at); if (e.kind.startsWith('assignee')) assigneeTouched = true; }
   }
-  if (!inserted) return { inserted: 0, taskId, changed: false };
+  if (!inserted) return { inserted: 0, taskId, changed: false, statuses: [] };
   if (assigneeTouched) await rebuildAssignees(db, taskId);
   await applyLatestToTask(db, taskId);
   await rebuildForTask(env, taskId, minAt, now);
-  return { inserted, taskId, changed: true };
+  return { inserted, taskId, changed: true, statuses: evs.filter((e) => e.kind === 'status').map((e) => e.to) };
 }
 
 // task_assignees is derived from events so arrival order cannot corrupt it.

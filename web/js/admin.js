@@ -259,31 +259,49 @@ async function statusCard(settings) {
   return card;
 }
 
-const CHECK_TYPES = [['ref_images', 'Reference images (embedded or image links)'], ['links', 'Links'], ['images', 'Embedded images'], ['text', 'Must contain these words'], ['words', 'Minimum word count']];
+const CHECK_TYPES = [
+  ['desc_links', 'A link in the ClickUp task description (script Doc, voice-over…)'],
+  ['desc_items', 'Number of list lines in the description (titles, ideas…)'],
+  ['desc_words', 'Minimum words in the description'],
+  ['ref_images', 'Reference images in the Google Doc (embedded or image links)'],
+  ['images', 'Embedded images in the Google Doc'],
+  ['links', 'Links inside the Google Doc'],
+  ['text', 'Google Doc must contain these words'],
+  ['words', 'Minimum words in the Google Doc'],
+];
 function scriptCheckCard(cfg, reload) {
-  const roles = h('input', { type: 'text', value: (cfg.roles || []).join(', '), placeholder: 'e.g. Writer' });
-  const rows = h('div', { class: 'stack' });
-  const rowEls = [];
-  const addRow = (r = { label: '', type: 'ref_images', min: 3, value: '' }) => {
-    const label = h('input', { type: 'text', value: r.label, placeholder: 'Check name, e.g. Reference images' });
-    const type = h('select', {}, CHECK_TYPES.map(([v, l]) => h('option', { value: v, selected: v === r.type }, l)));
-    const min = h('input', { type: 'number', min: 1, value: r.min ?? 1, 'aria-label': 'Minimum' });
-    const val = h('input', { type: 'text', value: r.value || '', placeholder: 'Words, comma separated (for "must contain" or to narrow links)' });
-    const del = h('button', { class: 'btn small', type: 'button' }, 'Remove');
-    const row = h('div', { class: 'item col' }, label, h('div', { class: 'row' }, type, min), val, del);
-    del.addEventListener('click', () => { row.remove(); rowEls.splice(rowEls.findIndex((x) => x.row === row), 1); });
-    rowEls.push({ row, label, type, min, val }); rows.append(row);
+  const jobs = JSON.parse(JSON.stringify(cfg.jobs || {}));
+  let current = Object.keys(jobs)[0] || '';
+  const card = h('section', { class: 'card' }, h('h2', {}, 'Script & title checks'),
+    h('p', { class: 'muted' }, 'When a task reaches a Finished status for someone with that job (for example "ready to edit" for a writer), the app reads the ClickUp task description and the Google Doc linked in it, and checks your list. It never blocks anyone. The result is shown to the person, the manager and in reports. Docs must be shared as "Anyone with the link can view".'));
+  const body = h('div', { class: 'stack' });
+  card.append(body);
+  const render = () => {
+    const sel = h('select', { 'aria-label': 'Job' }, Object.keys(jobs).map((j) => h('option', { value: j, selected: j === current }, j)));
+    sel.addEventListener('change', () => { current = sel.value; render(); });
+    const newJob = h('input', { type: 'text', placeholder: 'Add a job, e.g. Writer or Title finder', list: 'jobroles2' });
+    const dl = h('datalist', { id: 'jobroles2' }, ['Writer', 'Title finder', 'Designer', 'Editor'].map((x) => h('option', { value: x })));
+    const addJob = h('button', { class: 'btn', type: 'button', onclick: () => { const k = newJob.value.trim().toLowerCase(); if (!k) return; jobs[k] ||= { rules: [] }; current = k; render(); } }, 'Add job');
+    const rows = h('div', { class: 'stack' });
+    const rules = jobs[current]?.rules || [];
+    rules.forEach((r, i) => {
+      const label = h('input', { type: 'text', value: r.label, placeholder: 'Check name, e.g. Voice-over link' });
+      const type = h('select', {}, CHECK_TYPES.map(([v, l]) => h('option', { value: v, selected: v === r.type }, l)));
+      const min = h('input', { type: 'number', min: 1, value: r.min ?? 1, 'aria-label': 'Minimum' });
+      const val = h('input', { type: 'text', value: r.value || '', placeholder: 'Words, comma separated (e.g. drive.google.com, vocaroo.com)' });
+      const sync = () => { rules[i] = { label: label.value, type: type.value, min: type.value === 'text' ? null : +min.value || 1, value: val.value }; };
+      [label, type, min, val].forEach((el) => el.addEventListener('input', sync));
+      const del = h('button', { class: 'btn small', type: 'button', onclick: () => { rules.splice(i, 1); render(); } }, 'Remove');
+      rows.append(h('div', { class: 'item col' }, label, h('div', { class: 'row' }, type, h('span', { class: 'muted small' }, 'at least'), min), val, del));
+    });
+    const addRule = h('button', { class: 'btn', type: 'button', onclick: () => { (jobs[current] ||= { rules: [] }).rules.push({ label: '', type: 'desc_links', min: 1, value: '' }); render(); } }, 'Add a check');
+    const save = h('button', { class: 'btn primary', type: 'button' }, 'Save all checks');
+    save.addEventListener('click', busy(save, async () => {
+      try { await post('/api/admin/settings', { script_checks: { jobs } }); announce('Saved ✓'); reload(); } catch (e) { announce(e.message, 'err'); }
+    }));
+    body.replaceChildren(Object.keys(jobs).length ? field('Checks for job', sel) : h('p', { class: 'muted' }, 'No job has checks yet.'),
+      h('div', { class: 'row' }, newJob, addJob, dl), current ? rows : null, current ? addRule : null, save);
   };
-  (cfg.rules || []).forEach(addRow);
-  const add = h('button', { class: 'btn', type: 'button', onclick: () => addRow() }, 'Add a check');
-  const save = h('button', { class: 'btn primary', type: 'button' }, 'Save script checks');
-  save.addEventListener('click', busy(save, async () => {
-    try {
-      await post('/api/admin/settings', { script_checks: { roles: roles.value.split(',').map((x) => x.trim()).filter(Boolean), rules: rowEls.map((r, i) => ({ id: 'r' + (i + 1), label: r.label.value, type: r.type.value, min: r.type.value === 'text' ? null : +r.min.value || 1, value: r.val.value })) } });
-      announce('Saved ✓'); reload();
-    } catch (e) { announce(e.message, 'err'); }
-  }));
-  return h('section', { class: 'card' }, h('h2', {}, 'Script check (Google Docs)'),
-    h('p', { class: 'muted' }, 'When someone with these jobs deposits a Google Doc link, the app reads the Doc and checks your list. It never blocks check-out; the result is shown to the writer, the manager and in reports. The Doc must be shared as "Anyone with the link can view".'),
-    h('div', { class: 'stack' }, field('Jobs that are checked', roles, 'Comma separated, same names as the Job field under People.'), rows, add, save));
+  render();
+  return card;
 }

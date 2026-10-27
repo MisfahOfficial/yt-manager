@@ -37,6 +37,8 @@ const ROUTES = [
   ['POST', '/api/tasks/:id/changes', work.requestChanges, [M, A]],
   ['POST', '/api/deposits/:id/note', work.reviewNote, [M, A]],
   ['POST', '/api/deposits/:id/recheck', sc.recheck, [E, M, A]],
+  ['POST', '/api/tasks/:id/recheck', sc.recheckTask, [E, M, A]],
+  ['GET', '/api/checks', sc.listTaskChecks, [E, M, A]],
   ['GET', '/api/reports', rep.getReport, [M, A]],
   ['GET', '/api/attendance', adm.attendanceList, [M, A]],
   ['POST', '/api/attendance', att.addMissingAttendance, [M, A]],

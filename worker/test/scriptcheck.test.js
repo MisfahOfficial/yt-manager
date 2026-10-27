@@ -53,9 +53,9 @@ describe('script check end to end', () => {
   });
   afterAll(() => vi.useRealTimers());
   it('admin config is validated and only admins can change it', async () => {
-    expect((await wr.post('/api/admin/settings', { script_checks: { roles: ['Writer'], rules: RULES } })).status).toBe(403);
-    expect((await admin.post('/api/admin/settings', { script_checks: { roles: ['Writer'], rules: [{ label: 'x', type: 'weird' }] } })).status).toBe(400);
-    expect((await admin.post('/api/admin/settings', { script_checks: { roles: ['Writer'], rules: RULES } })).status).toBe(200);
+    expect((await wr.post('/api/admin/settings', { script_checks: { jobs: { Writer: { rules: RULES } } } })).status).toBe(403);
+    expect((await admin.post('/api/admin/settings', { script_checks: { jobs: { Writer: { rules: [{ label: 'x', type: 'weird' }] } } } })).status).toBe(400);
+    expect((await admin.post('/api/admin/settings', { script_checks: { jobs: { Writer: { rules: RULES } } } })).status).toBe(200);
   });
   it('checking a deposit stores the result and only applies to configured job roles', async () => {
     await wr.post('/api/checkin', { request_id: rid() }, { sign: true });
@@ -72,7 +72,7 @@ describe('script check end to end', () => {
     const rep = (await admin.get('/api/reports?kind=monthly&period=2026-11')).data.employees.find((e) => e.employee.id === wr.id);
     expect(rep.script_checks).toMatchObject({ checked: 1, failed: 1, passed: 0 });
     expect(rep.script_checks.failing[0].missing.join(' ')).toMatch(/Reference images \(0\/3\)/);
-    expect(rep.attention.join(' ')).toMatch(/did not pass the script check/);
+    expect(rep.attention.join(' ')).toMatch(/did not pass the script\/title check/);
   });
   it('re-check endpoint works for the owner and a manager, not for others', async () => {
     const row = await env.DB.prepare('SELECT id FROM deposits').first();
@@ -80,5 +80,77 @@ describe('script check end to end', () => {
     expect((await other.post(`/api/deposits/${row.id}/recheck`)).status).toBe(403);
     expect((await wr.post(`/api/deposits/${row.id}/recheck`)).status).toBe(200); // not-a-doc link: reported, not an error
     expect((await admin.post(`/api/deposits/${row.id}/recheck`)).status).toBe(200);
+  });
+});
+
+describe('ClickUp description checks (writer pastes script + VO link, then sets "ready to edit")', () => {
+  let admin, wr, tf; const MON = localMidnightMs('2026-11-16');
+  const cuTask = (desc) => ({ id: 'S1', name: 'Video 12 script', markdown_description: desc });
+  const taskEnv = (desc, page = GOOD) => Object.assign(Object.create(env), {
+    CLICKUP_TOKEN: 'pk_test', CLICKUP_FETCH: async () => new Response(JSON.stringify(cuTask(desc)), { status: 200 }),
+    DOC_FETCH: async () => { const r = new Response(page, { status: 200 }); Object.defineProperty(r, 'url', { value: 'https://docs.googleusercontent.com/x' }); return r; },
+  });
+  const DOC = 'https://docs.google.com/document/d/1AbCdEfGhIjKlMnOpQrStUv/edit';
+  beforeAll(async () => {
+    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(MON + 10 * 3600000);
+    admin = await setupTeam();
+    wr = await makeEmployee(admin, 'Wes', { job_role: 'Writer', clickup_user_id: '901' });
+    tf = await makeEmployee(admin, 'Tess', { job_role: 'Title finder', clickup_user_id: '902' });
+    await admin.post('/api/admin/settings', { status_map: { 'ready to edit': 'done' }, script_checks: { jobs: {
+      writer: { rules: [
+        { label: 'Script Google Doc linked', type: 'desc_links', min: 1, value: 'docs.google.com/document' },
+        { label: 'Voice-over link', type: 'desc_links', min: 1, value: 'drive.google.com, vocaroo.com, soundcloud.com' },
+        { label: 'Reference images', type: 'ref_images', min: 3 } ] },
+      'title finder': { rules: [{ label: 'At least 5 title options', type: 'desc_items', min: 5 }] },
+    } } });
+    for (const [u, tid] of [['901', 'S1'], ['902', 'S1']]) await env.DB.prepare('INSERT OR IGNORE INTO tasks(id,name,first_seen_ms) VALUES (?,?,1)').bind(tid, 'x').run();
+    await env.DB.prepare("INSERT INTO task_assignees(task_id,clickup_user_id,start_ms) VALUES ('S1','901',0),('S1','902',0)").run();
+  });
+  afterAll(() => vi.useRealTimers());
+
+  it('passes when the description has the Doc, the VO link and the Doc has 3 reference images', async () => {
+    const { runTaskChecks } = await import('../src/scriptcheck.js');
+    const desc = `Script: ${DOC}\nVO: https://drive.google.com/file/d/abc/view\n`;
+    await runTaskChecks(taskEnv(desc), 'S1', ['Ready to Edit'], Date.now());
+    const w = JSON.parse((await env.DB.prepare('SELECT result_json FROM task_checks WHERE employee_id=?').bind(wr.id).first()).result_json);
+    expect(w.status).toBe('ok');
+    expect(w.items.map((i) => [i.label, i.ok])).toEqual([['Script Google Doc linked', true], ['Voice-over link', true], ['Reference images', true]]);
+  });
+  it('names exactly what is missing when the writer forgot the VO link and images', async () => {
+    const { runTaskChecks } = await import('../src/scriptcheck.js');
+    await runTaskChecks(taskEnv(`Script: ${DOC}`, html('<p>draft</p>')), 'S1', ['ready to edit'], Date.now());
+    const w = JSON.parse((await env.DB.prepare('SELECT result_json FROM task_checks WHERE employee_id=?').bind(wr.id).first()).result_json);
+    expect(w.passed).toBe(false);
+    expect(w.items.filter((i) => !i.ok).map((i) => i.label)).toEqual(['Voice-over link', 'Reference images']);
+  });
+  it('title finders are checked on their own list (count of title lines in the description)', async () => {
+    const { runTaskChecks } = await import('../src/scriptcheck.js');
+    await runTaskChecks(taskEnv('- Title one\n- Title two\n- Title three\n'), 'S1', ['Ready to Edit'], Date.now());
+    let t = JSON.parse((await env.DB.prepare('SELECT result_json FROM task_checks WHERE employee_id=?').bind(tf.id).first()).result_json);
+    expect(t.items[0]).toMatchObject({ ok: false, have: 3, need: 5 });
+    await runTaskChecks(taskEnv('1. a\n2. b\n3. c\n4. d\n5. e\n6. f'), 'S1', ['Ready to Edit'], Date.now());
+    t = JSON.parse((await env.DB.prepare('SELECT result_json FROM task_checks WHERE employee_id=?').bind(tf.id).first()).result_json);
+    expect(t.passed).toBe(true);
+  });
+  it('only a Finished status triggers it; other statuses and other jobs do not', async () => {
+    const { runTaskChecks } = await import('../src/scriptcheck.js');
+    await env.DB.prepare('DELETE FROM task_checks').run();
+    await runTaskChecks(taskEnv('x'), 'S1', ['in progress', 'to do'], Date.now());
+    expect((await env.DB.prepare('SELECT COUNT(*) n FROM task_checks').first()).n).toBe(0);
+  });
+  it('a private Doc is reported as unreadable, not as a failed script', async () => {
+    const { checkTask } = await import('../src/scriptcheck.js');
+    const e = taskEnv(`Script: ${DOC}\nVO: https://drive.google.com/file/d/abc`);
+    e.DOC_FETCH = async () => new Response('x', { status: 403 });
+    const r = await checkTask(e, 'S1', { id: wr.id, job_role: 'Writer' }, 'ready to edit', Date.now());
+    expect(r.status).toBe('private');
+  });
+  it('visibility: the writer sees own checks, a manager sees the team, others see nothing of it', async () => {
+    const { checkTask } = await import('../src/scriptcheck.js');
+    await checkTask(taskEnv(`Script: ${DOC}\nVO: https://drive.google.com/file/d/abc`), 'S1', { id: wr.id, job_role: 'Writer' }, 'ready to edit', Date.now());
+    expect((await wr.get('/api/checks')).data.checks.map((c) => c.employee)).toEqual(['Wes']);
+    expect((await tf.get('/api/checks')).data.checks.every((c) => c.employee === 'Tess')).toBe(true);
+    expect((await admin.get('/api/checks')).data.checks.length).toBeGreaterThan(0);
+    expect((await tf.post('/api/tasks/S1/recheck')).status).toBe(200); // own task: allowed
   });
 });

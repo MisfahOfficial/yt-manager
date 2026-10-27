@@ -173,17 +173,19 @@ const SETTING_KEYS = {
   status_map: (v) => { if (!v || typeof v !== 'object') throw bad('bad_map'); const ok = ['active', 'revision', 'paused', 'done', 'other', 'ignore']; for (const [k, c] of Object.entries(v)) if (!ok.includes(c) || k.length > 60) throw bad('bad_map', 'Status mapping is not valid.'); return Object.fromEntries(Object.entries(v).map(([k, c]) => [k.toLowerCase().trim(), c])); },
   auto_reports: (v) => !!v,
   script_checks: (v) => {
-    if (!v || typeof v !== 'object' || !Array.isArray(v.rules) || !Array.isArray(v.roles) || v.rules.length > 12 || v.roles.length > 10) throw bad('bad_checks', 'Script check settings are not valid.');
-    const types = ['ref_images', 'links', 'images', 'text', 'words'];
-    return {
-      roles: v.roles.map((x) => str(x, 'job role', { max: 40 })),
-      rules: v.rules.map((r, i) => {
+    if (!v || typeof v !== 'object' || !v.jobs || typeof v.jobs !== 'object') throw bad('bad_checks', 'Script check settings are not valid.');
+    const types = ['ref_images', 'links', 'images', 'text', 'words', 'desc_links', 'desc_items', 'desc_words'];
+    const jobs = {};
+    for (const [job, cfg] of Object.entries(v.jobs)) {
+      if (job.length > 40 || !Array.isArray(cfg.rules) || cfg.rules.length > 12) throw bad('bad_checks', 'Script check settings are not valid.');
+      jobs[job.toLowerCase().trim()] = { rules: cfg.rules.map((r, i) => {
         if (!types.includes(r.type)) throw bad('bad_checks', 'Unknown check type.');
         const min = r.type === 'text' ? null : int(r.min ?? 1, 'minimum', { min: 1, max: 100000 });
         if (r.type === 'text' && !String(r.value || '').trim()) throw bad('bad_checks', 'Type the words that must appear.');
         return { id: String(r.id || 'r' + (i + 1)).slice(0, 20), label: str(r.label, 'check name', { max: 80 }), type: r.type, min, value: str(r.value, 'words', { optional: true, max: 300 }) };
-      }),
-    };
+      }) };
+    }
+    return { jobs };
   },
   role_status_maps: (v) => {
     if (!v || typeof v !== 'object' || Array.isArray(v)) throw bad('bad_map');
@@ -194,7 +196,7 @@ const SETTING_KEYS = {
 };
 export async function getSettings(ctx) {
   const out = {};
-  for (const k of Object.keys(SETTING_KEYS)) out[k] = await getSetting(ctx.env.DB, k, k === 'sync_time_min' ? 1110 : k === 'office_ips' ? [] : k === 'status_map' ? {} : k === 'auto_reports' ? true : k === 'role_status_maps' ? {} : k === 'script_checks' ? { roles: [], rules: [] } : null);
+  for (const k of Object.keys(SETTING_KEYS)) out[k] = await getSetting(ctx.env.DB, k, k === 'sync_time_min' ? 1110 : k === 'office_ips' ? [] : k === 'status_map' ? {} : k === 'auto_reports' ? true : k === 'role_status_maps' ? {} : k === 'script_checks' ? { jobs: {} } : null);
   return json({ settings: out, detected_ip: clientIp(ctx.req) });
 }
 export async function putSettings(ctx) {

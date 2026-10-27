@@ -1,4 +1,4 @@
-import { h, get, post, syncUntilDone, checkView, field, dialog, busy, announce, chip, empty, errBox, fmtTime, fmtDate, fmtDateTime, fmtDur, toInput, fromInput, todayYmd } from './core.js';
+import { h, get, post, syncUntilDone, checkView, checksSection, field, dialog, busy, announce, chip, empty, errBox, fmtTime, fmtDate, fmtDateTime, fmtDur, toInput, fromInput, todayYmd } from './core.js';
 import { depositItem } from './staff.js';
 
 const ATT = { checked_in: ['Checked in', 'ok'], done_for_today: ['Done for today', ''], not_in: ['Not in yet', 'warn'], missing_checkout: ['Missing check-out', 'bad'] };
@@ -53,7 +53,7 @@ export async function submissionsPage(root, me) {
       r.revisions.filter((v) => v.task_id === s.task_id).slice(0, 2).map((v) => h('div', { class: 'note' }, `Changes requested ${fmtDateTime(v.created_at)}: ${v.notes}`)));
     card.append(item);
   }
-  root.replaceChildren(card);
+  root.replaceChildren(card, await checksSection('Scripts & titles: automatic checks', () => submissionsPage(root, me)));
 }
 function noteDialog(s, done) {
   const t = h('textarea', { rows: 3, maxlength: 1000, required: true });
