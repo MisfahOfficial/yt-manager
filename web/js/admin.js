@@ -193,8 +193,13 @@ export async function settingsPage(root, me) {
   const out = h('section', { class: 'card' }, h('h2', {}, 'Imported old records'), h('p', { class: 'muted' }, 'Paste the old app\'s exported data (JSON) to keep its history. Old passwords are never imported.'), importBox());
   const sm = await statusCard(s.settings);
   const sck = scriptCheckCard(s.settings.script_checks, reload);
+  const ctj = h('input', { type: 'text', value: (s.settings.created_tracking_jobs || []).join(', '), placeholder: 'e.g. Title finder' });
+  const createdCard = h('section', { class: 'card' }, h('h2', {}, 'Jobs that create tasks (titles, ideas)'),
+    h('p', { class: 'muted' }, 'For jobs that add each title or idea as a new ClickUp task instead of moving tasks through statuses. The app counts the tasks they create, per channel code (the start of the task name, like V4--), per day, week and month. It flags names without a code and titles that may repeat. Titles are not scored.'),
+    field('Jobs counted this way', ctj, 'Comma separated, same names as the Job field under People.'),
+    (() => { const b = h('button', { class: 'btn primary', type: 'button' }, 'Save'); b.addEventListener('click', busy(b, async () => { try { await post('/api/admin/settings', { created_tracking_jobs: ctj.value.split(',').map((x) => x.trim()).filter(Boolean) }); announce('Saved ✓ Press Sync now to load recent tasks.'); } catch (e) { announce(e.message, 'err'); } })); return b; })());
   const aud = h('section', { class: 'card' }, h('h2', {}, 'Audit history'), h('p', { class: 'muted' }, 'Every correction, approval and setting change.'), h('a', { class: 'btn', href: '#audit' }, 'Open audit history'));
-  root.replaceChildren(net, outage, cuCard, sm, sck, shiftCard, rep, aud, out);
+  root.replaceChildren(net, outage, cuCard, sm, sck, createdCard, shiftCard, rep, aud, out);
 }
 function teamPick(teams, onPick) {
   const sel = h('select', {}, teams.map((t) => h('option', { value: t.id }, t.name)));

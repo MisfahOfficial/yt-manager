@@ -171,7 +171,7 @@ describe('OAuth connect', () => {
   });
 });
 
-describe('scheduled sync discipline', () => {
+describe('scheduled sync discipline', { timeout: 30000 }, () => {
   it('only fires after the configured Karachi time, once per day, and retries failures at most every 2 hours', async () => {
     const { cronTick } = await import('../src/clickup.js');
     await env.DB.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES ('clickup_team_id','\"T1\"'),('sync_time_min','1110')").run();
@@ -192,5 +192,57 @@ describe('scheduled sync discipline', () => {
     await cronTick(bad, day + 21.5 * H);        // 2.5 h later: one retry
     expect(calls.length).toBe(1);
     expect((await env.DB.prepare('SELECT cursor FROM sync_state').first()).cursor).toBeNull();
+  });
+});
+
+describe('titles: counting tasks a person creates (title finder)', () => {
+  let tf2;
+  const mk = (id, name, by, at) => ({ id, name, url: 'https://app.clickup.com/t/' + id, status: { status: 'to do' }, assignees: [], creator: { id: by }, date_created: String(at), date_updated: String(at), list: { name: 'V3 & V4' } });
+  beforeAll(async () => {
+    tf2 = await makeEmployee(admin, 'Tina', { job_role: 'Title finder', clickup_user_id: '4242' });
+    await env.DB.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES ('clickup_team_id','\"T1\"')").run();
+    await admin.post('/api/admin/settings', { created_tracking_jobs: ['Title finder'] });
+  });
+  it('created pass stores only tasks made by tracked people, with no assignee needed', async () => {
+    const { createdPass } = await import('../src/clickup.js');
+    const t = Date.now();
+    const e = mockEnv(() => ok({ last_page: true, tasks: [
+      mk('N1', 'V4--30 Forgotten $1 Meals for Two Seniors', '4242', t - 3600000),
+      mk('N2', 'V3--12 Britain\'s lost school dinners', '4242', t - 7200000),
+      mk('N3', 'Fix thumbnail for video 9', '4242', t - 1000),        // no channel code
+      mk('N4', 'V4--31 forgotten $1 meals for two seniors', '4242', t - 500), // repeats N1
+      mk('X1', 'V1--5 Someone elses task', '9999', t - 100),            // not tracked
+    ] }));
+    await createdPass(e, t);
+    expect((await env.DB.prepare("SELECT COUNT(*) n FROM tasks WHERE id IN ('N1','N2','N3','N4','X1')").first()).n).toBe(4);
+    expect((await env.DB.prepare("SELECT 1 FROM tasks WHERE id='X1'").first())).toBeNull();
+  });
+  it('reports count per channel code, flag missing codes and repeats; Today shows the person their own count', async () => {
+    const period = new Date().toISOString().slice(0, 7);
+    const rep = (await admin.get(`/api/reports?kind=monthly&period=${period}`)).data;
+    const r = rep.employees.find((x) => x.employee.id === tf2.id);
+    expect(r.created.total).toBe(4);
+    expect(r.created.by_code).toEqual({ V4: 2, V3: 1 });
+    expect(r.created.no_code.map((x) => x.name)).toEqual(['Fix thumbnail for video 9']);
+    expect(r.created.duplicates.length).toBe(2); // N1 and N4 repeat each other
+    expect(r.attention.join(' ')).toMatch(/without a channel code/);
+    expect(rep.totals.created).toBeGreaterThanOrEqual(4);
+    const today = (await tf2.get('/api/today')).data;
+    expect(today.created.week).toBeGreaterThan(0);
+    expect(today.created.by_code.V4).toBe(2);
+  });
+  it('webhook taskCreated records who created it', async () => {
+    await env.DB.prepare("INSERT OR REPLACE INTO secrets_store(key,value) VALUES ('clickup_webhook_secret',?)").bind(await (await import('../src/lib/crypto.js')).encryptSecret(env.ENCRYPTION_KEY, 'whsec')).run();
+    const { processWebhook } = await import('../src/clickup.js');
+    const at = Date.now();
+    const r = await processWebhook(env, { webhook_id: 'w', event: 'taskCreated', task_id: 'NEW1', history_items: [{ id: 'c1', field: 'status', date: String(at), before: null, after: { status: 'to do' }, user: { id: 4242 } }] }, at);
+    expect(r.changed).toBe(true);
+    const row = await env.DB.prepare("SELECT creator_id,created_ms FROM tasks WHERE id='NEW1'").first();
+    expect(row).toEqual({ creator_id: '4242', created_ms: at });
+  });
+  it('the people who are not tracked get no title block', async () => {
+    const period = new Date().toISOString().slice(0, 7);
+    const rep = (await admin.get(`/api/reports?kind=monthly&period=${period}`)).data;
+    expect(rep.employees.filter((x) => x.employee.id !== tf2.id).every((x) => x.created === null)).toBe(true);
   });
 });

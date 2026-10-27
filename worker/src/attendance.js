@@ -47,6 +47,15 @@ export async function today(ctx) {
   const dev = await env.DB.prepare("SELECT status FROM devices WHERE employee_id=? ORDER BY CASE status WHEN 'approved' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END LIMIT 1").bind(emp.id).first();
   let choices = [];
   if (state.ambiguous) choices = (await env.DB.prepare(`SELECT id,name,url FROM tasks WHERE id IN (${state.ambiguous.tasks.map(() => '?').join(',')})`).bind(...state.ambiguous.tasks).all()).results;
+  let created = null;
+  const trackJobs = (await getSetting(env.DB, 'created_tracking_jobs', [])).map((j) => String(j).toLowerCase());
+  if (emp.clickup_user_id && emp.job_role && trackJobs.includes(emp.job_role.toLowerCase())) {
+    const weekStart = localMidnightMs(addDays(localDate(now), -((new Date(localDate(now) + 'T00:00:00Z').getUTCDay() + 6) % 7)));
+    const rows = (await env.DB.prepare('SELECT name,created_ms FROM tasks WHERE creator_id=? AND created_ms>=? AND deleted=0').bind(emp.clickup_user_id, weekStart).all()).results;
+    const { codeOf } = await import('./lib/titles.js');
+    created = { today: rows.filter((r) => r.created_ms >= dayStart).length, week: rows.length, by_code: {} };
+    for (const r of rows) { const c = codeOf(r.name) || 'No code'; created.by_code[c] = (created.by_code[c] || 0) + 1; }
+  }
   let unverified = [];
   if (emp.clickup_user_id) {
     unverified = (await env.DB.prepare(
@@ -55,7 +64,7 @@ export async function today(ctx) {
           AND (SELECT note FROM task_events e WHERE e.task_id=t.id AND e.kind='status' ORDER BY e.at_ms DESC,e.id DESC LIMIT 1)='approx'`).bind(emp.clickup_user_id).all()).results;
   }
   return json({
-    unverified_tasks: unverified, server_time: now, state: open ? 'checked_in' : 'checked_out', attendance: view(open || last),
+    created, unverified_tasks: unverified, server_time: now, state: open ? 'checked_in' : 'checked_out', attendance: view(open || last),
     deposit_count: dep, active_task: task ? { ...task, kind: state.active.kind, since: state.active.start } : null,
     needs_task_choice: choices, recorded_ms_today: recorded, device_status: dev?.status || 'none',
   });

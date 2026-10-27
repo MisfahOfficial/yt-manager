@@ -106,7 +106,7 @@ export async function reportsPage(root, me) {
   const T = r.totals;
   body.push(h('section', { class: 'card' }, h('h2', {}, 'Summary'), h('div', { class: 'stats' },
     stat('Present / scheduled', `${T.present_days} / ${T.scheduled_days}`), stat('Approved leave days', T.leave_days), stat('Unexplained absences', T.absent_days), stat('Late (minutes)', T.late_minutes),
-    stat('Ready for Upload', T.delivered), stat('On time / late', `${T.on_time} / ${T.overdue}`), stat('Original editing time', fmtDur(T.original_ms)), stat('Revision time', fmtDur(T.revision_ms)))));
+    stat('Ready for Upload', T.delivered), stat('On time / late', `${T.on_time} / ${T.overdue}`), stat('Original editing time', fmtDur(T.original_ms)), stat('Revision time', fmtDur(T.revision_ms)), T.created ? stat('Titles / tasks created', T.created) : null)));
   const need = r.employees.flatMap((e) => e.attention.map((a) => `${e.employee.name}: ${a}`));
   body.push(h('section', { class: 'card' }, h('h2', {}, 'Needs your attention'), need.length ? h('ul', {}, need.map((n) => h('li', {}, n))) : empty('Nothing flagged.')));
   if (r.kind === 'monthly' && r.previous) body.push(h('section', { class: 'card' }, h('h2', {}, 'Compared with ' + r.previous.period), r.previous.comparable
@@ -133,6 +133,11 @@ function employeeBlock(e, kind) {
     d.tasks.length ? h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Task', 'Channel', 'Delivered', 'Deadline', ''].map((x) => h('th', {}, x)))),
       h('tbody', {}, d.tasks.map((t) => h('tr', {}, h('td', {}, h('a', { href: t.url || '#', target: '_blank', rel: 'noopener noreferrer' }, t.name || t.task_id)), h('td', {}, t.channel), h('td', {}, fmtDateTime(t.delivered_at)), h('td', {}, t.deadline ? fmtDateTime(t.deadline) : '—'),
         h('td', {}, t.on_time === true ? chip('On time', 'ok') : t.on_time === false ? chip('Late', 'bad') : chip('No deadline'), t.extended_after_miss ? chip('Extended after miss', 'warn') : null)))))) : null,
+    e.created ? h('div', {}, h('strong', {}, 'Tasks created (titles / ideas)'), h('p', {}, `${e.created.total} created` + (Object.keys(e.created.by_code).length ? ': ' + Object.entries(e.created.by_code).sort().map(([k, v]) => `${k} ${v}`).join(', ') : '')),
+      e.created.days.length ? h('p', { class: 'muted small' }, 'Per day: ' + e.created.days.map((d) => `${d.date.slice(5)}: ${d.count}`).join(' · ')) : null,
+      e.created.no_code.length ? h('div', { class: 'warnbox' }, 'No channel code: ', e.created.no_code.map((t) => h('a', { class: 'tag', href: t.url || '#', target: '_blank', rel: 'noopener noreferrer' }, t.name))) : null,
+      e.created.duplicates.length ? h('div', { class: 'warnbox' }, 'May repeat an existing title: ', e.created.duplicates.map((t) => h('a', { class: 'tag', href: t.url || '#', target: '_blank', rel: 'noopener noreferrer' }, t.name))) : null,
+      h('p', { class: 'muted small' }, e.created.note)) : null,
     e.script_checks && (e.script_checks.checked || e.script_checks.unavailable) ? h('div', {}, h('strong', {}, 'Script checks'), h('p', {}, `${e.script_checks.passed} of ${e.script_checks.checked} script(s) passed all checks` + (e.script_checks.unavailable ? ` (${e.script_checks.unavailable} could not be read: private or not a Google Doc)` : '')),
       h('ul', {}, Object.entries(e.script_checks.by_rule).map(([k, v]) => h('li', {}, `${k}: ${v.passed} of ${v.total}`))),
       e.script_checks.failing.length ? h('ul', {}, e.script_checks.failing.map((f) => h('li', {}, h('a', { href: f.link, target: '_blank', rel: 'noopener noreferrer' }, 'Script'), ' — missing: ' + f.missing.join(', ')))) : null) : null,

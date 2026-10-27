@@ -88,6 +88,11 @@ export async function processWebhook(env, p, now) {
       .bind(e.key, taskId, e.kind, e.at, now, 'webhook', e.from ?? null, e.to ?? null, e.actor ?? null).run();
     if (r.meta.changes) { inserted++; minAt = Math.min(minAt, e.at); if (e.kind.startsWith('assignee')) assigneeTouched = true; }
   }
+  if (p.event === 'taskCreated') {
+    const first = items[0];
+    await db.prepare('UPDATE tasks SET creator_id=COALESCE(creator_id,?),created_ms=COALESCE(created_ms,?) WHERE id=?').bind(first?.user?.id != null ? String(first.user.id) : null, Number(first?.date) || now, taskId).run();
+    if (!inserted) return { inserted: 0, taskId, changed: true, statuses: [] }; // still refresh name/creator from ClickUp
+  }
   if (!inserted) return { inserted: 0, taskId, changed: false, statuses: [] };
   if (assigneeTouched) await rebuildAssignees(db, taskId);
   await applyLatestToTask(db, taskId);
@@ -133,8 +138,8 @@ async function applyLatestToTask(db, taskId) {
 
 export async function refreshTaskMeta(env, taskId) {
   const t = await cu(env, `/task/${encodeURIComponent(taskId)}`);
-  await env.DB.prepare('UPDATE tasks SET name=?,url=?,priority=?,list_name=?,updated_ms=? WHERE id=?')
-    .bind(t.name || '(untitled)', t.url || null, t.priority?.priority || null, t.list?.name || null, Number(t.date_updated) || null, taskId).run();
+  await env.DB.prepare('UPDATE tasks SET name=?,url=?,priority=?,list_name=?,updated_ms=?,creator_id=COALESCE(?,creator_id),created_ms=COALESCE(?,created_ms) WHERE id=?')
+    .bind(t.name || '(untitled)', t.url || null, t.priority?.priority || null, t.list?.name || null, Number(t.date_updated) || null, t.creator?.id != null ? String(t.creator.id) : null, Number(t.date_created) || null, taskId).run();
 }
 
 // ---------------------------------------------------------------- reconcile / sync
@@ -172,6 +177,7 @@ export async function runSync(env, now, { manual = false, maxPages = PAGES_PER_R
     if (done) {
       if (cur.mode === 'full') await probeMissing(env, new Set(cur.seen), now, map);
       await rebuildLinked(env, now);
+      await createdPass(env, now).catch((e) => console.error('created_pass_failed', e));
       await db.prepare('UPDATE sync_state SET running=0,last_ok_ms=?,last_error=NULL,cursor=NULL,last_run_day=? WHERE id=1').bind(now, localDate(now)).run();
     } else {
       await db.prepare('UPDATE sync_state SET running=0,last_error=NULL,cursor=?,last_attempt_ms=? WHERE id=1').bind(JSON.stringify(cur), now).run();
@@ -212,9 +218,9 @@ export async function reconcilePage(env, tasks, now, map) {
     const status = t.status?.status ?? null;
     const due = t.due_date ? Number(t.due_date) : null;
     stmts.push(db.prepare(
-      `INSERT INTO tasks(id,name,url,status,priority,due_ms,list_name,deleted,updated_ms,first_seen_ms) VALUES (?,?,?,?,?,?,?,0,?,?)
-       ON CONFLICT(id) DO UPDATE SET name=excluded.name,url=excluded.url,status=excluded.status,priority=excluded.priority,due_ms=excluded.due_ms,list_name=excluded.list_name,deleted=0,updated_ms=excluded.updated_ms`)
-      .bind(id, t.name || '(untitled)', t.url || null, status, t.priority?.priority || null, due, t.list?.name || null, Number(t.date_updated) || null, now));
+      `INSERT INTO tasks(id,name,url,status,priority,due_ms,list_name,deleted,updated_ms,first_seen_ms,creator_id,created_ms) VALUES (?,?,?,?,?,?,?,0,?,?,?,?)
+       ON CONFLICT(id) DO UPDATE SET name=excluded.name,url=excluded.url,status=excluded.status,priority=excluded.priority,due_ms=excluded.due_ms,list_name=excluded.list_name,deleted=0,updated_ms=excluded.updated_ms,creator_id=COALESCE(excluded.creator_id,creator_id),created_ms=COALESCE(excluded.created_ms,created_ms)`)
+      .bind(id, t.name || '(untitled)', t.url || null, status, t.priority?.priority || null, due, t.list?.name || null, Number(t.date_updated) || null, now, t.creator?.id != null ? String(t.creator.id) : null, Number(t.date_created) || null));
     const ls = lastStatus.get(id);
     if (status != null && (!ls || String(ls.to_val).toLowerCase() !== String(status).toLowerCase())) {
       // Webhook history missed this change. Record it as UNVERIFIED over the whole uncertain window; never as counted time.
@@ -246,6 +252,33 @@ export async function reconcilePage(env, tasks, now, map) {
   for (let i = 0; i < stmts.length; i += 40) await db.batch(stmts.slice(i, i + 40));
   await rebuildAssigneesBulk(db, touched.filter((t) => t[2]).map((t) => t[0]));
   // time sessions are rebuilt once when the whole sync finishes (rebuildLinked), not per page
+}
+
+// Jobs whose output is CREATING tasks (e.g. title finders paste each title as a new task). Only tasks made by linked people are kept.
+export async function createdPass(env, now, maxPages = 2) {
+  const db = env.DB;
+  const jobs = (await getSetting(db, 'created_tracking_jobs', [])).map((j) => String(j).toLowerCase());
+  if (!jobs.length) return { skipped: true };
+  const team = await getSetting(db, 'clickup_team_id', null);
+  if (!team) return { skipped: true };
+  const people = (await db.prepare("SELECT id,clickup_user_id,job_role FROM employees WHERE clickup_user_id IS NOT NULL AND active=1 AND job_role IS NOT NULL").all()).results.filter((p) => jobs.includes(p.job_role.toLowerCase()));
+  if (!people.length) return { skipped: true };
+  const mine = new Set(people.map((p) => p.clickup_user_id));
+  const cur = await getSetting(db, 'created_cursor', null) || { since: now - 30 * 86400000, page: 0 };
+  let pages = 0, done = false;
+  while (pages < maxPages) {
+    const r = await cu(env, `/team/${encodeURIComponent(team)}/task?page=${cur.page}&include_closed=true&subtasks=true&order_by=created&date_created_gt=${Math.max(0, cur.since - 86400000)}`);
+    const tasks = (r.tasks || []).filter((t) => t.creator?.id != null && mine.has(String(t.creator.id)));
+    const stmts = tasks.map((t) => db.prepare(
+      `INSERT INTO tasks(id,name,url,status,priority,due_ms,list_name,deleted,updated_ms,first_seen_ms,creator_id,created_ms) VALUES (?,?,?,?,?,?,?,0,?,?,?,?)
+       ON CONFLICT(id) DO UPDATE SET name=excluded.name,url=excluded.url,status=excluded.status,list_name=excluded.list_name,deleted=0,creator_id=excluded.creator_id,created_ms=excluded.created_ms`)
+      .bind(String(t.id), t.name || '(untitled)', t.url || null, t.status?.status ?? null, t.priority?.priority || null, t.due_date ? Number(t.due_date) : null, t.list?.name || null, Number(t.date_updated) || null, now, String(t.creator.id), Number(t.date_created) || null));
+    for (let i = 0; i < stmts.length; i += 40) await db.batch(stmts.slice(i, i + 40));
+    pages++; cur.page++;
+    if (r.last_page === true || (r.tasks || []).length < 100) { done = true; break; }
+  }
+  await db.batch([setSettingStmt(db, 'created_cursor', done ? { since: now, page: 0 } : cur)]);
+  return { done, pages };
 }
 
 // A task missing from the listing may just be archived/closed, so confirm individually before calling it deleted.

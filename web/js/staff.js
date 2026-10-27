@@ -121,6 +121,9 @@ export async function todayPage(root, me) {
   if (checkedIn && !t.active_task && t.unverified_tasks?.length) taskCard.append(h('div', { class: 'warnbox' }, `ClickUp has not told us when "${t.unverified_tasks[0].name}" started, so it is not timed yet. Move it to another status and back to In Progress in ClickUp to start the timer.`));
   taskCard.append(h('p', { class: 'muted' }, 'Recorded task time today: ', rec, ' — counted only while you are checked in.'));
   out.push(taskCard);
+  if (t.created) out.push(h('section', { class: 'card' }, h('h2', {}, 'Titles you added'), h('p', { class: 'big2' }, `${t.created.today} today · ${t.created.week} this week`),
+    h('p', { class: 'muted' }, Object.keys(t.created.by_code).length ? Object.entries(t.created.by_code).sort().map(([k, v]) => `${k}: ${v}`).join(' · ') : 'Nothing created this week yet.'),
+    h('p', { class: 'muted small' }, 'Counted from tasks you create in ClickUp. Start each title with its channel code, like V4--. It can take a few minutes to appear.')));
   root.replaceChildren(...out);
   clearInterval(todayPage.t); if (t.active_task && checkedIn) todayPage.t = setInterval(tick, 30000);
 }

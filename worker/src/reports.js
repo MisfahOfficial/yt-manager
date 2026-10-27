@@ -1,4 +1,5 @@
 import { json, bad, forbidden, getSetting } from './http.js';
+import { codeOf, normTitle } from './lib/titles.js';
 import { teamIds } from './work.js';
 import { loadShiftContext, attendanceEnd, statusMap } from './engine.js';
 import { statusTimeline, deliveries, applicableDeadline, classify, normalize, intersect, total } from './lib/timer.js';
@@ -6,7 +7,7 @@ import { periodRange, localMidnightMs, addDays, localDate, prevPeriod, isYmd, we
 
 const MIN = 60000;
 
-export async function employeeReport(env, emp, kind, period, now, map) {
+export async function employeeReport(env, emp, kind, period, now, map, trackJobs = []) {
   const { from, to } = periodRange(kind, period);
   const fromMs = localMidnightMs(from), toMs = localMidnightMs(addDays(to, 1));
   const db = env.DB;
@@ -105,6 +106,23 @@ export async function employeeReport(env, emp, kind, period, now, map) {
     }
   } else warn.push('Not linked to a ClickUp user: tasks and recorded time are not available.');
 
+  // jobs that create tasks (title finders): count what they created, per channel code
+  let created = null;
+  if (emp.clickup_user_id && emp.job_role && trackJobs.includes(emp.job_role.toLowerCase())) {
+    const mine = (await db.prepare('SELECT id,name,url,created_ms FROM tasks WHERE creator_id=? AND created_ms>=? AND created_ms<? AND deleted=0 ORDER BY created_ms').bind(emp.clickup_user_id, fromMs, toMs).all()).results;
+    const all = (await db.prepare('SELECT id,name FROM tasks WHERE deleted=0 LIMIT 20000').all()).results;
+    const seen = new Map();
+    for (const t of all) { const k = normTitle(t.name); if (k) { if (!seen.has(k)) seen.set(k, []); seen.get(k).push(t.id); } }
+    created = { total: mine.length, by_code: {}, no_code: [], days: {}, duplicates: [], note: 'Counts tasks this person created in ClickUp. It does not judge title quality.' };
+    for (const t of mine) {
+      const c = codeOf(t.name);
+      if (c) created.by_code[c] = (created.by_code[c] || 0) + 1; else created.no_code.push({ id: t.id, name: t.name, url: t.url });
+      const d = localDate(t.created_ms); created.days[d] = (created.days[d] || 0) + 1;
+      const same = (seen.get(normTitle(t.name)) || []).filter((x) => x !== t.id);
+      if (same.length) created.duplicates.push({ id: t.id, name: t.name, url: t.url, others: same.length });
+    }
+    created.days = Object.entries(created.days).sort().map(([date, n]) => ({ date, count: n }));
+  }
   const attention = [];
   if (absent) attention.push(`${absent} unexplained absence day(s)`);
   if (missingCo) attention.push(`${missingCo} missing check-out(s) need correction`);
@@ -112,6 +130,8 @@ export async function employeeReport(env, emp, kind, period, now, map) {
   if (overdue) attention.push(`${overdue} delivery(ies) after the agreed deadline`);
   if (exceptions) attention.push(`${exceptions} check-out(s) done without a work deposit (technical exception)`);
   if (netEx) attention.push(`${netEx} attendance record(s) made under a network exception`);
+  if (created?.no_code.length) attention.push(`${created.no_code.length} title(s) created without a channel code`);
+  if (created?.duplicates.length) attention.push(`${created.duplicates.length} title(s) that may repeat an existing one`);
   if (scriptChecks.failed) attention.push(`${scriptChecks.failed} item(s) did not pass the script/title check`);
   if (gapsOut.length) attention.push(`${gapsOut.length} ClickUp history gap(s): exact times unknown`);
 
@@ -123,7 +143,7 @@ export async function employeeReport(env, emp, kind, period, now, map) {
     deposits: { count: deps.length, missing_days: missingDeposits, checkout_exceptions: exceptions },
     delivery: { delivered: deliveredTasks.length, on_time: onTime, overdue, no_deadline: noDeadline, revision_deliveries: revDelivered, denominator: onTime + overdue, tasks: deliveredTasks, label: 'Ready for Upload / Delivered (not quality-approved)' },
     recorded_time: { original_ms: origMs, revision_ms: revMs, note: 'Recorded task time while checked in and in an eligible status; not proof of focused editing.' },
-    script_checks: scriptChecks, blockers, gaps: gapsOut, attention,
+    created, script_checks: scriptChecks, blockers, gaps: gapsOut, attention,
     sources: { attendance_ids: att.map((a) => a.id), deposit_ids: deps.map((d) => d.id), task_ids: [...byTask.keys(), ...deliveredTasks.map((t) => t.task_id)] },
   };
 }
@@ -133,7 +153,7 @@ function rollup(list) {
   return {
     scheduled_days: sum((r) => r.attendance.scheduled_days), present_days: sum((r) => r.attendance.present_days),
     leave_days: sum((r) => r.attendance.approved_leave_days), absent_days: sum((r) => r.attendance.unexplained_absence_days),
-    late_minutes: sum((r) => r.attendance.late_minutes), delivered: sum((r) => r.delivery.delivered), on_time: sum((r) => r.delivery.on_time), overdue: sum((r) => r.delivery.overdue),
+    late_minutes: sum((r) => r.attendance.late_minutes), delivered: sum((r) => r.delivery.delivered), on_time: sum((r) => r.delivery.on_time), overdue: sum((r) => r.delivery.overdue), created: sum((r) => r.created?.total || 0),
     original_ms: sum((r) => r.recorded_time.original_ms), revision_ms: sum((r) => r.recorded_time.revision_ms), deposits: sum((r) => r.deposits.count),
   };
 }
@@ -141,15 +161,16 @@ function rollup(list) {
 export async function buildReport(env, ids, kind, period, now) {
   const emps = ids.length ? (await env.DB.prepare(`SELECT id,name,job_role,clickup_user_id FROM employees WHERE id IN (${ids.map(() => '?').join(',')}) AND role<>'admin' AND active=1 ORDER BY name`).bind(...ids).all()).results : [];
   const rows = [];
+  const trackJobs = (await getSetting(env.DB, 'created_tracking_jobs', [])).map((j) => String(j).toLowerCase());
   const maps = new Map(); // one map per job role
   const mapFor = async (e) => { const k = e.job_role || ''; if (!maps.has(k)) maps.set(k, await statusMap(env.DB, e.job_role)); return maps.get(k); };
-  for (const e of emps) rows.push(await employeeReport(env, e, kind, period, now, await mapFor(e)));
+  for (const e of emps) rows.push(await employeeReport(env, e, kind, period, now, await mapFor(e), trackJobs));
   const out = { kind, period, range: periodRange(kind, period), generated_at: now, incomplete_period: rows.some((r) => r.incomplete_period), employees: rows, totals: rollup(rows),
     notes: ['No automatic pay, raise or disciplinary decisions are made from this report.', 'Employees are not ranked: shifts and video complexity differ.'] };
   if (kind === 'monthly') {
     const pp = prevPeriod(kind, period);
     const prevRows = [];
-    for (const e of emps) prevRows.push(await employeeReport(env, e, kind, pp, now, await mapFor(e)));
+    for (const e of emps) prevRows.push(await employeeReport(env, e, kind, pp, now, await mapFor(e), trackJobs));
     const pt = rollup(prevRows);
     const comparable = pt.scheduled_days > 0 && out.totals.scheduled_days > 0;
     out.previous = { period: pp, totals: pt, comparable, comparable_note: comparable ? 'Compare per scheduled day; month lengths and shifts differ.' : 'Not comparable (no scheduled days in one of the months).' };
