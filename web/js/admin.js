@@ -35,7 +35,7 @@ export async function peoplePage(root, me) {
       h('td', {}, shiftName([...e.shifts].reverse().find((s) => !s.effective_to)?.shift_id)),
       h('td', {}, e.clickup_user_id ? chip('Linked', 'ok') : chip('Not linked', 'warn')),
       h('td', {}, (() => { const b = h('button', { class: 'btn small', type: 'button' }, 'Manage'); b.addEventListener('click', () => personDialog(e, emps, () => peoplePage(root, me), shifts)); return b; })())))))));
-  root.replaceChildren(card);
+  root.replaceChildren(await devicesBlock(() => peoplePage(root, me)), card);
 }
 
 async function personDialog(e, emps, done, shifts = []) {
@@ -101,27 +101,30 @@ function overtimeDialog(e) {
   });
 }
 
-export async function devicesPage(root, me) {
-  root.replaceChildren(h('p', { class: 'muted' }, 'Loading…'));
-  let r; try { r = await get('/api/admin/devices'); } catch (e) { root.replaceChildren(errBox(e)); return; }
+// Computers (device approvals) live inside People: only needed at set-up and when someone changes computer.
+async function devicesBlock(reload) {
+  let r; try { r = await get('/api/admin/devices'); } catch (e) { return errBox(e); }
   const pend = r.devices.filter((d) => d.status === 'pending'), appr = r.devices.filter((d) => d.status === 'approved');
   const hasApproved = (id) => appr.some((a) => a.employee_id === id);
-  const c1 = h('section', { class: 'card' }, h('h2', {}, 'Waiting for approval'), h('p', { class: 'muted' }, 'Approve a computer only when you have seen the person set it up. One computer per person. A computer cannot be shared.'));
-  if (!pend.length) c1.append(empty('No requests.'));
-  for (const d of pend) {
-    const b = h('button', { class: 'btn primary', type: 'button' }, hasApproved(d.employee_id) ? 'Approve & replace old' : 'Approve');
-    b.addEventListener('click', busy(b, async () => {
-      if (hasApproved(d.employee_id) && !confirm(`${d.employee} already has an approved computer. Replace it? The old one stops working.`)) return;
-      try { await post(`/api/admin/devices/${d.id}/approve`, { replace: hasApproved(d.employee_id) }); announce('Approved ✓'); devicesPage(root, me); } catch (e) { announce(e.message, 'err'); }
-    }));
-    const rj = h('button', { class: 'btn', type: 'button' }, 'Reject'); rj.addEventListener('click', () => revokeDialog(d, () => devicesPage(root, me)));
-    c1.append(h('div', { class: 'item' }, h('div', {}, h('strong', {}, d.employee), h('div', { class: 'muted' }, `${d.label || 'Computer'} · requested ${fmtDateTime(d.created_at)}`)), h('div', { class: 'row' }, rj, b)));
+  const wrap = h('div', {});
+  if (pend.length) {
+    const c1 = h('section', { class: 'card' }, h('h2', {}, 'Computers waiting for approval'), h('p', { class: 'muted small' }, 'Approve a computer only after you saw the person set it up. One computer per person.'));
+    for (const d of pend) {
+      const b = h('button', { class: 'btn primary small', type: 'button' }, hasApproved(d.employee_id) ? 'Approve & replace old' : 'Approve');
+      b.addEventListener('click', busy(b, async () => {
+        if (hasApproved(d.employee_id) && !confirm(`${d.employee} already has an approved computer. Replace it? The old one stops working.`)) return;
+        try { await post(`/api/admin/devices/${d.id}/approve`, { replace: hasApproved(d.employee_id) }); announce('Approved ✓'); reload(); } catch (e) { announce(e.message, 'err'); }
+      }));
+      const rj = h('button', { class: 'btn small', type: 'button' }, 'Reject'); rj.addEventListener('click', () => revokeDialog(d, reload));
+      c1.append(h('div', { class: 'item row between' }, h('div', {}, h('strong', {}, d.employee), h('div', { class: 'muted small' }, `${d.label || 'Computer'} · ${fmtDateTime(d.created_at)}`)), h('div', { class: 'row' }, rj, b)));
+    }
+    wrap.append(c1);
   }
-  const c2 = h('section', { class: 'card' }, h('h2', {}, 'Approved computers'));
+  const c2 = h('details', { class: 'card' }, h('summary', {}, `Approved computers (${appr.length})`));
+  for (const d of appr) { const b = h('button', { class: 'btn small', type: 'button' }, 'Remove'); b.addEventListener('click', () => revokeDialog(d, reload)); c2.append(h('div', { class: 'item row between' }, h('div', {}, h('strong', {}, d.employee), h('div', { class: 'muted small' }, `${d.label || 'Computer'} · approved ${fmtDateTime(d.decided_at)}`)), b)); }
   if (!appr.length) c2.append(empty('None yet.'));
-  for (const d of appr) { const b = h('button', { class: 'btn small', type: 'button' }, 'Remove'); b.addEventListener('click', () => revokeDialog(d, () => devicesPage(root, me)));
-    c2.append(h('div', { class: 'item' }, h('div', {}, h('strong', {}, d.employee), h('div', { class: 'muted' }, `${d.label || 'Computer'} · approved ${fmtDateTime(d.decided_at)}`)), b)); }
-  root.replaceChildren(c1, c2);
+  wrap.append(c2);
+  return wrap;
 }
 function revokeDialog(d, done) {
   const why = h('input', { type: 'text', required: true, minlength: 3, maxlength: 200, placeholder: 'Reason (saved in the audit history)' });
@@ -199,7 +202,10 @@ export async function settingsPage(root, me) {
     field('Jobs counted this way', ctj, 'Comma separated, same names as the Job field under People.'),
     (() => { const b = h('button', { class: 'btn primary', type: 'button' }, 'Save'); b.addEventListener('click', busy(b, async () => { try { await post('/api/admin/settings', { created_tracking_jobs: ctj.value.split(',').map((x) => x.trim()).filter(Boolean) }); announce('Saved ✓ Press Sync now to load recent tasks.'); } catch (e) { announce(e.message, 'err'); } })); return b; })());
   const aud = h('section', { class: 'card' }, h('h2', {}, 'Audit history'), h('p', { class: 'muted' }, 'Every correction, approval and setting change.'), h('a', { class: 'btn', href: '#audit' }, 'Open audit history'));
-  root.replaceChildren(net, outage, cuCard, sm, sck, createdCard, shiftCard, rep, aud, out);
+  const secs = [[net, 'Office network'], [outage, 'Outage'], [cuCard, 'ClickUp'], [sm, 'Statuses'], [sck, 'Script checks'], [createdCard, 'Titles'], [shiftCard, 'Shifts'], [rep, 'Reports'], [aud, 'Audit']];
+  secs.forEach(([el, l], i) => { el.id = 'sec' + i; });
+  const jump = h('nav', { class: 'jump', 'aria-label': 'Settings sections' }, secs.map(([, l], i) => h('a', { href: '#settings', onclick: (ev) => { ev.preventDefault(); document.getElementById('sec' + i)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } }, l)));
+  root.replaceChildren(jump, ...secs.map(([el]) => el), out);
 }
 function teamPick(teams, onPick) {
   const sel = h('select', {}, teams.map((t) => h('option', { value: t.id }, t.name)));

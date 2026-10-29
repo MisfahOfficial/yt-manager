@@ -8,9 +8,9 @@ This is an independent fork of `AbdulHaseebAwan/Misfah-YT-Manger`. The old singl
 ## What it does
 | Role | Sees |
 |---|---|
-| Employee | Today (check in/out, current task, recorded time) · My Tasks · Work Deposit · My History |
-| Manager | Team overview · Work Submissions (+ optional "Request changes") · Weekly/Monthly Reports · Attendance (corrections only if granted) |
-| Owner/Admin | Everything above + People · Computers · Settings (office network, ClickUp, shifts, reports) · Audit history |
+| Employee | **Today** (date and shift, Clock in / Clock out, My Work, Update) · **My History & Reports** (own goal %, tasks done, days, request a correction) |
+| Manager | The two employee tabs (a manager can also have tasks), then **Team** (with a task page: work, time, history) · **Reports** · **Corrections** |
+| Owner/Admin | Everything above + **People** (with computer approvals) · **Settings** (office network, ClickUp, shifts, checks, reports, audit). Only the Owner sees comparisons with earlier periods, customises reports and sets goals |
 
 Permissions are enforced by the server on every request (`worker/src/index.js` route table + per-handler team scoping). Hiding a button is never the protection.
 

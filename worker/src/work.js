@@ -77,7 +77,7 @@ export async function teamOverview(ctx) {
     const blocked = p.clickup_user_id ? (await env.DB.prepare(
       `SELECT t.id,t.name,t.url,t.status FROM tasks t JOIN task_assignees ta ON ta.task_id=t.id WHERE ta.clickup_user_id=? AND ta.end_ms IS NULL AND t.deleted=0`).bind(p.clickup_user_id).all()).results.filter((t) => classify(t.status, pmap) === 'paused') : [];
     out.push({
-      latest_update: await env.DB.prepare('SELECT d.completed text,d.created_at at,d.review_note,t.name task_name FROM deposits d LEFT JOIN tasks t ON t.id=d.task_id WHERE d.employee_id=? ORDER BY d.created_at DESC LIMIT 1').bind(p.id).first(),
+      latest_update: await env.DB.prepare('SELECT d.completed text,d.created_at at,d.review_note,d.task_id,t.name task_name FROM deposits d LEFT JOIN tasks t ON t.id=d.task_id WHERE d.employee_id=? ORDER BY d.created_at DESC LIMIT 1').bind(p.id).first(),
       unreviewed: (await env.DB.prepare('SELECT COUNT(*) n FROM deposits WHERE employee_id=? AND review_note IS NULL AND created_at>=?').bind(p.id, now - 7 * 86400000).first()).n,
       id: p.id, name: p.name, job_role: p.job_role,
       attendance: open ? (open.status === 'open' ? 'checked_in' : 'missing_checkout') : todayAtt.n ? 'done_for_today' : 'not_in',

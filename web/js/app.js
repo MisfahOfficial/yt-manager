@@ -1,17 +1,18 @@
 import { h, $, get, post, field, busy, announce, errBox, setAuthLostHandler, setCurrentUser } from './core.js';
-import { todayPage, tasksPage, depositPage, historyPage } from './staff.js';
-import { teamPage, submissionsPage, reportsPage, fixesPage } from './manager.js';
-import { peoplePage, devicesPage, settingsPage, auditPage } from './admin.js';
+import { todayPage, historyPage } from './staff.js';
+import { teamPage, taskPage, reportsPage, fixesPage } from './manager.js';
+import { peoplePage, settingsPage, auditPage } from './admin.js';
 
 const main = $('#main');
 let me = null;
 
-const EMP = [['today', 'Today', todayPage], ['tasks', 'My Tasks', tasksPage], ['deposit', 'Work Deposit', depositPage], ['history', 'My History', historyPage]];
-const MGR = [['team', 'Team', teamPage], ['submissions', 'Work Submissions', submissionsPage], ['reports', 'Reports', reportsPage], ['fixes', 'Attendance', fixesPage]];
-const ADM = [['people', 'People', peoplePage], ['devices', 'Computers', devicesPage], ['settings', 'Settings', settingsPage]];
+// Everyone who works (employees, and managers/the Owner when they have tasks) gets the same two work tabs first.
+const OWN = [['today', 'Today', todayPage], ['history', 'My History & Reports', historyPage]];
+const MGR = [['team', 'Team', teamPage], ['reports', 'Reports', reportsPage], ['fixes', 'Corrections', fixesPage]];
+const ADM = [['people', 'People', peoplePage], ['settings', 'Settings', settingsPage]];
 const HIDDEN = [['audit', 'Audit history', auditPage]]; // reached from Settings
 
-const pagesFor = (m) => (m.role === 'employee' ? { main: EMP, sub: [] } : m.role === 'manager' ? { main: MGR, sub: EMP } : { main: [...MGR, ...ADM], sub: EMP });
+const pagesFor = (m) => (m.role === 'employee' ? { groups: [OWN] } : m.role === 'manager' ? { groups: [OWN, MGR] } : { groups: [OWN, [...MGR, ...ADM]] });
 
 function authScreen(children) { $('#top').hidden = true; $('#sub').hidden = true; main.replaceChildren(h('div', { class: 'auth' }, h('h1', {}, 'YT Manager'), ...children)); }
 
@@ -65,19 +66,29 @@ function passwordScreen(forced) {
 
 function shell() {
   const pg = pagesFor(me);
-  $('#top').hidden = false; $('#whoName').textContent = me.name;
-  const all = [...pg.main, ...pg.sub, ...(me.role === 'admin' ? HIDDEN : [])];
+  $('#top').hidden = false; $('#sub').hidden = true; $('#whoName').textContent = me.name;
+  const all = [...pg.groups.flat(), ...(me.role === 'admin' ? HIDDEN : [])];
   const route = () => {
-    const id = (location.hash || '').slice(1);
-    const page = all.find((p) => p[0] === id) || pg.main[0];
-    if (!location.hash || page[0] !== id) { history.replaceState(null, '', '#' + page[0]); }
-    const link = (p, el) => h('a', { href: '#' + p[0], class: p[0] === page[0] ? 'on' : '', 'aria-current': p[0] === page[0] ? 'page' : null }, p[1]);
-    $('#nav').replaceChildren(...pg.main.map((p) => link(p)));
-    const sub = $('#sub'); sub.hidden = !pg.sub.length;
-    sub.replaceChildren(h('span', { class: 'subl' }, 'My work:'), ...pg.sub.map((p) => link(p)));
+    const raw = (location.hash || '').slice(1);
+    const [id, arg] = raw.split('/');
     clearInterval(todayPage.t);
+    if (id === 'task' && arg && me.role !== 'employee') {
+      renderNav('team'); taskPage(main, me, decodeURIComponent(arg)); main.focus({ preventScroll: true }); return;
+    }
+    const alias = { devices: 'people', tasks: 'today', deposit: 'today', submissions: 'team' }[id] || id;
+    const page = all.find((p) => p[0] === alias) || pg.groups[0][0];
+    if (!location.hash || page[0] !== id) history.replaceState(null, '', '#' + page[0]);
+    renderNav(page[0]);
     page[2](main, me);
     main.focus({ preventScroll: true });
+  };
+  const renderNav = (cur) => {
+    const nodes = [];
+    pg.groups.forEach((g, i) => {
+      if (i) nodes.push(h('span', { class: 'sep', 'aria-hidden': 'true' }));
+      for (const p of g) nodes.push(h('a', { href: '#' + p[0], class: p[0] === cur ? 'on' : '', 'aria-current': p[0] === cur ? 'page' : null }, p[1]));
+    });
+    $('#nav').replaceChildren(...nodes);
   };
   window.onhashchange = route; route();
 }
