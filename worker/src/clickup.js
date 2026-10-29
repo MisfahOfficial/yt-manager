@@ -3,6 +3,8 @@ import { hmacHex, timingSafeEqual, encryptSecret, decryptSecret, randomToken, sh
 import { rebuildForTask, rebuildEmployee, statusMap } from './engine.js';
 import { classify } from './lib/timer.js';
 import { runTaskChecks } from './scriptcheck.js';
+import { firstToken } from './lib/titles.js';
+import { loadChannels } from './calendar.js';
 import { localDate, localMinutes } from './lib/time.js';
 
 const API = 'https://api.clickup.com/api/v2';
@@ -178,6 +180,7 @@ export async function runSync(env, now, { manual = false, maxPages = PAGES_PER_R
       if (cur.mode === 'full') await probeMissing(env, new Set(cur.seen), now, map);
       await rebuildLinked(env, now);
       await createdPass(env, now).catch((e) => console.error('created_pass_failed', e));
+      await calendarPass(env, now).catch((e) => console.error('calendar_pass_failed', e));
       await db.prepare('UPDATE sync_state SET running=0,last_ok_ms=?,last_error=NULL,cursor=NULL,last_run_day=? WHERE id=1').bind(now, localDate(now)).run();
     } else {
       await db.prepare('UPDATE sync_state SET running=0,last_error=NULL,cursor=?,last_attempt_ms=? WHERE id=1').bind(JSON.stringify(cur), now).run();
@@ -279,6 +282,27 @@ export async function createdPass(env, now, maxPages = 2) {
   }
   await db.batch([setSettingStmt(db, 'created_cursor', done ? { since: now, page: 0 } : cur)]);
   return { done, pages };
+}
+
+// Content Calendar: videos with an upload day near today, whoever they are assigned to. Only tasks whose name starts with a known channel code are kept.
+export async function calendarPass(env, now, maxPages = 3) {
+  const db = env.DB;
+  const team = await getSetting(db, 'clickup_team_id', null);
+  if (!team) return { skipped: true };
+  const channels = await loadChannels(db);
+  let kept = 0;
+  for (let page = 0; page < maxPages; page++) {
+    const r = await cu(env, `/team/${encodeURIComponent(team)}/task?page=${page}&include_closed=true&subtasks=true&order_by=due_date&due_date_gt=${now - 8 * 86400000}&due_date_lt=${now + 35 * 86400000}`);
+    const tasks = (r.tasks || []).filter((t) => channels.has(firstToken(t.name)));
+    const stmts = tasks.map((t) => db.prepare(
+      `INSERT INTO tasks(id,name,url,status,priority,due_ms,list_name,deleted,updated_ms,first_seen_ms) VALUES (?,?,?,?,?,?,?,0,?,?)
+       ON CONFLICT(id) DO UPDATE SET name=excluded.name,url=excluded.url,status=excluded.status,due_ms=excluded.due_ms,list_name=excluded.list_name,deleted=0,updated_ms=excluded.updated_ms`)
+      .bind(String(t.id), t.name || '(untitled)', t.url || null, t.status?.status ?? null, t.priority?.priority || null, t.due_date ? Number(t.due_date) : null, t.list?.name || null, Number(t.date_updated) || null, now));
+    for (let i = 0; i < stmts.length; i += 40) await db.batch(stmts.slice(i, i + 40));
+    kept += tasks.length;
+    if (r.last_page === true || (r.tasks || []).length < 100) break;
+  }
+  return { kept };
 }
 
 // A task missing from the listing may just be archived/closed, so confirm individually before calling it deleted.

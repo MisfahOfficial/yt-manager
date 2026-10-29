@@ -91,7 +91,7 @@ describe('reconcile', () => {
   });
   it('5xx is retried then succeeds', async () => {
     let n = 0;
-    const e = mockEnv((url) => (url.includes('/team/') ? (++n < 2 ? new Response('x', { status: 503 }) : ok({ tasks: [], last_page: true })) : ok(task('x', 'to do'))));
+    const e = mockEnv((url) => (url.includes('assignees[]') ? (++n < 2 ? new Response('x', { status: 503 }) : ok({ tasks: [], last_page: true })) : ok(task('x', 'to do'))));
     const r = await runSync(e, Date.now() + 20000, { manual: true });
     expect(r.ok).toBe(true);
     expect(n).toBe(2);

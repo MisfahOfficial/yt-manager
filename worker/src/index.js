@@ -8,6 +8,7 @@ import * as adm from './admin.js';
 import { sweepMissingCheckouts } from './engine.js';
 import * as sc from './scriptcheck.js';
 import * as cr from './corrections.js';
+import * as cal from './calendar.js';
 
 const E = 'employee', M = 'manager', A = 'admin';
 // [method, path, handler, who]  who: 'public' | roles allowed
@@ -51,6 +52,11 @@ const ROUTES = [
   ['POST', '/api/correction-requests/:id/decide', cr.decide, [M, A]],
   ['POST', '/api/progress', work.createDeposit, [E, M, A]],
 
+  ['GET', '/api/calendar', cal.calendar, [M, A]],
+  ['GET', '/api/channels', cal.listChannels, [M, A]],
+  ['POST', '/api/admin/channels', cal.saveChannels, [A]],
+  ['GET', '/api/admin/categories', cal.listCategories, [A]],
+  ['POST', '/api/admin/categories', cal.saveCategories, [A]],
   ['GET', '/api/admin/employees', adm.listEmployees, [A]],
   ['POST', '/api/admin/employees', adm.createEmployee, [A]],
   ['POST', '/api/admin/employees/:id', adm.updateEmployee, [A]],

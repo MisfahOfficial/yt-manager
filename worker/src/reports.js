@@ -1,5 +1,6 @@
 import { json, bad, forbidden, getSetting } from './http.js';
-import { codeOf, normTitle } from './lib/titles.js';
+import { codeOf, normTitle, channelOf, isAutomation } from './lib/titles.js';
+import { loadChannels } from './calendar.js';
 import { teamIds } from './work.js';
 import { loadShiftContext, attendanceEnd, statusMap } from './engine.js';
 import { statusTimeline, deliveries, applicableDeadline, classify, normalize, intersect, total } from './lib/timer.js';
@@ -7,7 +8,7 @@ import { periodRange, localMidnightMs, addDays, localDate, prevPeriod, isYmd, we
 
 const MIN = 60000;
 
-export async function employeeReport(env, emp, kind, period, now, map, trackJobs = [], goals = {}) {
+export async function employeeReport(env, emp, kind, period, now, map, trackJobs = [], goals = {}, extra = {}) {
   const { from, to } = periodRange(kind, period);
   const fromMs = localMidnightMs(from), toMs = localMidnightMs(addDays(to, 1));
   const db = env.DB;
@@ -91,7 +92,7 @@ export async function employeeReport(env, emp, kind, period, now, map, trackJobs
         if (d.at < fromMs || d.at >= toMs) return;
         if (d.kind === 'revision') { revDelivered++; return; }
         const ad = applicableDeadline(due, d.at);
-        const rec = { task_id: id, name: t?.name, url: t?.url, channel: t?.list_name || 'Not set', delivered_at: d.at, deadline: ad.deadline, original_deadline: ad.original ?? null, extended_after_miss: ad.extendedAfterMiss.length > 0 };
+        const rec = { task_id: id, name: t?.name, url: t?.url, channel: (extra.channels && channelOf(t?.name, extra.channels)?.name) || 'No channel', delivered_at: d.at, deadline: ad.deadline, original_deadline: ad.original ?? null, extended_after_miss: ad.extendedAfterMiss.length > 0 };
         if (ad.deadline == null) { noDeadline++; rec.on_time = null; } else if (d.at <= ad.deadline) { onTime++; rec.on_time = true; } else { overdue++; rec.on_time = false; }
         deliveredTasks.push(rec);
       });
@@ -132,6 +133,17 @@ export async function employeeReport(env, emp, kind, period, now, map, trackJobs
     const count = created ? created.total : deliveredTasks.length;
     goal = { per_week: perWeek, target, count, pct: Math.round(count / target * 100), metric: created ? 'titles created' : 'tasks delivered' };
   }
+  // work types: the person's category (from their job) with automation-made thumbnails kept apart
+  const roleCat = (extra.cats || []).find((c) => c.active && c.job_role && emp.job_role && c.job_role.toLowerCase() === emp.job_role.toLowerCase())?.name || emp.job_role || 'Other';
+  const catOf = (n) => (isAutomation(n) ? 'Thumbnail (automation)' : roleCat);
+  const workTypes = {};
+  const wt = (k) => (workTypes[k] ||= { delivered: 0, ms: 0 });
+  for (const d of deliveredTasks) wt(catOf(d.name)).delivered++;
+  if (byTask.size) {
+    const ids = [...byTask.keys()];
+    const names = new Map((await db.prepare(`SELECT id,name FROM tasks WHERE id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all()).results.map((r) => [r.id, r.name]));
+    for (const [id, v] of byTask) wt(catOf(names.get(id))).ms += v.orig + v.rev;
+  }
   const attention = [];
   if (absent) attention.push(`${absent} unexplained absence day(s)`);
   if (missingCo) attention.push(`${missingCo} missing check-out(s) need correction`);
@@ -152,7 +164,7 @@ export async function employeeReport(env, emp, kind, period, now, map, trackJobs
     deposits: { count: deps.length, missing_days: missingDeposits, checkout_exceptions: exceptions },
     delivery: { delivered: deliveredTasks.length, on_time: onTime, overdue, no_deadline: noDeadline, revision_deliveries: revDelivered, denominator: onTime + overdue, tasks: deliveredTasks, label: 'Ready for Upload / Delivered (not quality-approved)' },
     recorded_time: { original_ms: origMs, revision_ms: revMs, note: 'Recorded task time while checked in and in an eligible status; not proof of focused editing.' },
-    goal, created, script_checks: scriptChecks, blockers, gaps: gapsOut, attention,
+    work_types: workTypes, goal, created, script_checks: scriptChecks, blockers, gaps: gapsOut, attention,
     sources: { attendance_ids: att.map((a) => a.id), deposit_ids: deps.map((d) => d.id), task_ids: [...byTask.keys(), ...deliveredTasks.map((t) => t.task_id)] },
   };
 }
@@ -179,29 +191,35 @@ export async function buildReport(env, ids, kind, period, now, opts = {}) {
   const rows = [];
   const trackJobs = (await getSetting(env.DB, 'created_tracking_jobs', [])).map((j) => String(j).toLowerCase());
   const goals = Object.fromEntries(Object.entries(await getSetting(env.DB, 'job_goals', {})).map(([k, v]) => [k.toLowerCase(), v]));
+  const extra = { channels: await loadChannels(env.DB), cats: (await env.DB.prepare('SELECT name,job_role,active FROM work_categories').all()).results };
   const maps = new Map(); // one map per job role
   const mapFor = async (e) => { const k = e.job_role || ''; if (!maps.has(k)) maps.set(k, await statusMap(env.DB, e.job_role)); return maps.get(k); };
-  for (const e of emps) rows.push(await employeeReport(env, e, kind, period, now, await mapFor(e), trackJobs, goals));
+  for (const e of emps) rows.push(await employeeReport(env, e, kind, period, now, await mapFor(e), trackJobs, goals, extra));
   const out = { kind, period, range: periodRange(kind, period), generated_at: now, incomplete_period: rows.some((r) => r.incomplete_period), employees: rows, totals: rollup(rows),
     notes: ['No automatic pay, raise or disciplinary decisions are made from this report.', 'Employees are not ranked: shifts and video complexity differ.'] };
   if (opts.comparison) {
     const against = opts.against || 'previous';
     const pp = comparePeriod(kind, period, against);
     const prevRows = [];
-    for (const e of emps) prevRows.push(await employeeReport(env, e, kind, pp, now, await mapFor(e), trackJobs, goals));
+    for (const e of emps) prevRows.push(await employeeReport(env, e, kind, pp, now, await mapFor(e), trackJobs, goals, extra));
     const cnt = (r) => (r.created ? r.created.total : r.delivery.delivered);
     rows.forEach((r, i) => { const p0 = prevRows[i]; r.comparison = { period: pp, delivered_delta: cnt(r) - cnt(p0), goal_pct_delta: r.goal && p0.goal ? r.goal.pct - p0.goal.pct : null, days_delta: r.attendance.present_days - p0.attendance.present_days, time_delta_ms: (r.recorded_time.original_ms + r.recorded_time.revision_ms) - (p0.recorded_time.original_ms + p0.recorded_time.revision_ms) }; });
     const pt = rollup(prevRows);
     const comparable = pt.scheduled_days > 0 && out.totals.scheduled_days > 0;
     out.previous = { period: pp, against, label: AGAINST[against], totals: pt, comparable, comparable_note: comparable ? 'Compare per scheduled day; period lengths and shifts differ.' : 'Not comparable (no scheduled days in one of the periods).' };
   }
+  {
+  const byCh = {};
+    for (const r of rows) for (const t of r.delivery.tasks) { const c = (byCh[t.channel] ||= { delivered: 0, on_time: 0, overdue: 0 }); c.delivered++; if (t.on_time === true) c.on_time++; if (t.on_time === false) c.overdue++; }
+    out.by_channel = byCh;
+    const byWt = {};
+    for (const r of rows) for (const [k, v] of Object.entries(r.work_types || {})) { const c = (byWt[k] ||= { people: 0, delivered: 0, ms: 0 }); c.people++; c.delivered += v.delivered; c.ms += v.ms; }
+    out.by_work_type = byWt;
+  }
   if (kind === 'monthly') {
     const rep = new Map();
     for (const r of rows) for (const b of r.blockers) rep.set(b.task_id, (rep.get(b.task_id) || 0) + 1);
     out.repeated_blockers = [...rep.entries()].filter(([, n]) => n > 1).map(([task_id, n]) => ({ task_id, times: n }));
-    const byCh = {};
-    for (const r of rows) for (const t of r.delivery.tasks) { const c = (byCh[t.channel] ||= { delivered: 0, on_time: 0, overdue: 0 }); c.delivered++; if (t.on_time === true) c.on_time++; if (t.on_time === false) c.overdue++; }
-    out.by_channel = byCh;
     const byRole = {};
     for (const r of rows) { const k = r.employee.job_role || 'No job role set'; const c = (byRole[k] ||= { people: 0, delivered: 0, on_time: 0, overdue: 0, original_ms: 0, revision_ms: 0 }); c.people++; c.delivered += r.delivery.delivered; c.on_time += r.delivery.on_time; c.overdue += r.delivery.overdue; c.original_ms += r.recorded_time.original_ms; c.revision_ms += r.recorded_time.revision_ms; }
     out.by_role = byRole;
