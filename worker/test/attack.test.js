@@ -292,6 +292,9 @@ describe('flood guards and quotas', () => {
     const codes = [];
     for (let i = 0; i < 8; i++) codes.push((await handle(mk('/api/login', '', 'POST', '8.8.4.4'), small, { waitUntil() {} })).status);
     expect(codes.slice(0, 5)).toEqual([401, 401, 401, 401, 401]); expect(codes.slice(5)).toEqual([429, 429, 429]);
+    // a successful login is never counted: a whole office can sign in together
+    const okReq = () => new Request('https://ytm.test/api/login', { method: 'POST', headers: { 'x-requested-with': 'ytm', 'content-type': 'application/json', 'cf-connecting-ip': '7.7.7.7' }, body: JSON.stringify({ email: 'owner@x.test', password: 'owner-password-1' }) });
+    for (let i = 0; i < 8; i++) expect((await handle(okReq(), small, { waitUntil() {} })).status).toBe(200);
     const hits = [];
     for (let i = 0; i < 14; i++) hits.push((await handle(mk('/api/me', admin.cookie), small, { waitUntil() {} })).status);
     expect(hits.filter((s) => s === 429).length).toBeGreaterThan(0);

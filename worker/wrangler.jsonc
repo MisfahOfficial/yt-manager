@@ -3,7 +3,7 @@
   "main": "src/index.js",
   "compatibility_date": "2026-08-01",
   "compatibility_flags": ["nodejs_compat"],
-  "assets": { "directory": "../web", "binding": "ASSETS", "not_found_handling": "single-page-application", "run_worker_first": ["/api/*"] },
+  "assets": { "directory": "../web", "binding": "ASSETS", "not_found_handling": "single-page-application", "run_worker_first": true },
   "d1_databases": [
     { "binding": "DB", "database_name": "ytm", "database_id": "5b275893-b291-465c-8bad-0d7d73f39d71", "migrations_dir": "migrations" }
   ],

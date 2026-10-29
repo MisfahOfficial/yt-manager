@@ -105,8 +105,10 @@ const pathExists = (pathname) => ROUTES.some((r) => r.re.test(pathname));
 
 // Best-effort flood guard (per Worker instance, free): at most N requests per window per key.
 const HITS = new Map();
+function recent(key, windowMs, now) { return (HITS.get(key) || []).filter((t) => now - t < windowMs); }
+function addHit(key, now) { const arr = recent(key, 120000, now); arr.push(now); HITS.set(key, arr); }
 function throttled(key, max, windowMs, now) {
-  const arr = (HITS.get(key) || []).filter((t) => now - t < windowMs);
+  const arr = recent(key, windowMs, now);
   arr.push(now); HITS.set(key, arr);
   if (HITS.size > 5000) for (const k of HITS.keys()) { if (!HITS.get(k).some((t) => now - t < windowMs)) HITS.delete(k); }
   return arr.length > max;
@@ -123,8 +125,9 @@ export async function handle(request, env, execCtx) {
     }
     const { r, params } = m;
     const ip = request.headers.get('cf-connecting-ip') || 'x';
-    if (url.pathname === '/api/login' && throttled('login:' + ip, +env.LOGIN_PER_MIN || 20, 60000, now)) throw new HttpError(429, 'slow_down', 'Too many attempts. Wait a minute and try again.');
-    const ctx = { env, req: request, url, now, params, emp: null, body: {}, rawBody: '', waitUntil: (p) => execCtx?.waitUntil(p) };
+    // Only FAILED logins count, so a whole office signing in together is never slowed down; a guesser from one address is.
+    if (url.pathname === '/api/login' && recent('login:' + ip, 60000, now).length >= (+env.LOGIN_PER_MIN || 20)) throw new HttpError(429, 'slow_down', 'Too many wrong attempts. Wait a minute and try again.');
+    const ctx = { env, req: request, url, now, params, emp: null, body: {}, rawBody: '', waitUntil: (p) => execCtx?.waitUntil(p), noteFailedLogin: () => addHit('login:' + ip, now) };
     const mutating = request.method !== 'GET' && request.method !== 'HEAD';
     if (mutating && !r.opts.raw) {
       // CSRF: custom header cannot be sent cross-site without CORS approval (we send none); Origin must match when present.
@@ -170,6 +173,10 @@ async function housekeeping(db, now) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    if (url.protocol === 'http:' && !['localhost', '127.0.0.1'].includes(url.hostname)) {
+      if (request.method === 'GET' || request.method === 'HEAD') { url.protocol = 'https:'; return new Response(null, { status: 301, headers: { location: url.toString() } }); }
+      return new Response('Use https', { status: 403 });
+    }
     if (url.pathname.startsWith('/api/')) return handle(request, env, ctx);
     return env.ASSETS.fetch(request);
   },

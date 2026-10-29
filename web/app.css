@@ -87,3 +87,4 @@ table.cal{min-width:900px;table-layout:fixed}table.cal th,table.cal td{border:1p
 table.cal th.chan{width:150px;position:sticky;left:0;background:var(--card);z-index:1}.cal .today{background:color-mix(in srgb,var(--brand) 10%,transparent)}
 .dot{display:inline-block;width:10px;height:10px;border-radius:50%}
 .cal-item{display:block;text-decoration:none;color:var(--ink);background:var(--bg);border-radius:8px;padding:6px 8px;margin:0 0 6px}.cal-item:hover{outline:1px solid var(--brand)}.cal-name{display:block;font-weight:600;margin-bottom:2px}
+@media (max-width:640px){.top{gap:6px 10px}#nav{flex:1 1 100%;flex-wrap:nowrap;overflow-x:auto;order:3;padding-bottom:4px}#nav a{white-space:nowrap}.sep{display:none}.who{order:2;margin-left:auto;width:auto}}

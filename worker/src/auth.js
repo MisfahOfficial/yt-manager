@@ -63,6 +63,7 @@ export async function login(ctx) {
   else await hashPassword(body.password, '00'.repeat(16), +env.PBKDF2_ITER || 100000); // equalise timing
   // Only real accounts get an attempt row, so a flood of made-up emails cannot burn the free database write quota.
   if (emp) await env.DB.prepare('INSERT INTO login_attempts(email,at,ok) VALUES (?,?,?)').bind(email, ctx.now, ok ? 1 : 0).run();
+  if (!ok) { ctx.noteFailedLogin?.(); }
   if (!ok) throw new HttpError(401, 'bad_login', 'Email or password is wrong. Use exactly the email your admin entered for you.');
   const tok = randomToken(32);
   const ttl = (+env.SESSION_HOURS || 12) * 3600000;
