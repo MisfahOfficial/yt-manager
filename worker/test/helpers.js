@@ -16,7 +16,7 @@ export class Client {
     const res = await SELF.fetch(ORIGIN + path, { method, headers: h, body: method === 'GET' ? undefined : (text ?? '{}') });
     const sc = res.headers.get('set-cookie');
     if (sc) this.cookie = sc.split(';')[0].endsWith('=') ? '' : sc.split(';')[0];
-    let data = null; try { data = await res.json(); } catch {}
+    const text2 = await res.text(); let data = null; try { data = JSON.parse(text2); } catch { data = text2 || null; }
     return { status: res.status, data };
   }
   get(p, o) { return this.req('GET', p, undefined, o); }

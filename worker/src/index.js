@@ -10,6 +10,8 @@ import { sweepMissingCheckouts } from './engine.js';
 import * as sc from './scriptcheck.js';
 import * as cr from './corrections.js';
 import * as cal from './calendar.js';
+import * as bk from './backup.js';
+import * as ex from './export.js';
 
 const E = 'employee', M = 'manager', A = 'admin';
 // [method, path, handler, who]  who: 'public' | roles allowed
@@ -58,6 +60,10 @@ const ROUTES = [
   ['POST', '/api/admin/channels', cal.saveChannels, [A]],
   ['GET', '/api/admin/categories', cal.listCategories, [A]],
   ['POST', '/api/admin/categories', cal.saveCategories, [A]],
+  ['GET', '/api/admin/backups', bk.listBackups, [A]],
+  ['POST', '/api/admin/backups/run', bk.runBackupNow, [A]],
+  ['GET', '/api/admin/backups/:date', bk.downloadBackup, [A]],
+  ['GET', '/api/admin/export/:what', ex.exportCsv, [A]],
   ['GET', '/api/admin/employees', adm.listEmployees, [A]],
   ['POST', '/api/admin/employees', adm.createEmployee, [A]],
   ['POST', '/api/admin/employees/:id', adm.updateEmployee, [A]],
@@ -183,10 +189,11 @@ export default {
   async scheduled(event, env, ctx) {
     const now = Date.now();
     ctx.waitUntil((async () => {
+      if (event.cron === '11 */6 * * *') { await rep.autoReports(env, now).catch((e) => console.error('auto_reports_failed', e)); return; } // own invocation: own CPU budget
       await sweepMissingCheckouts(env.DB, now);
       await housekeeping(env.DB, now);
       await cl.cronTick(env, now);
-      await rep.autoReports(env, now);
+      await bk.cronBackup(env, now).catch((e) => console.error('backup_failed', e));
     })());
   },
 };

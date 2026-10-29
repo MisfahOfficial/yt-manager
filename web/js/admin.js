@@ -136,6 +136,7 @@ function revokeDialog(d, done) {
 }
 
 export async function settingsPage(root, me) {
+  me0 = me;
   root.replaceChildren(h('p', { class: 'muted' }, 'Loading…'));
   let s, ex, hl, shifts; try { [s, ex, hl, shifts] = await Promise.all([get('/api/admin/settings'), get('/api/admin/network-exceptions'), get('/api/admin/clickup/health'), get('/api/admin/shifts')]); } catch (e) { root.replaceChildren(errBox(e)); return; }
   const reload = () => settingsPage(root, me);
@@ -196,6 +197,7 @@ export async function settingsPage(root, me) {
   const out = h('section', { class: 'card' }, h('h2', {}, 'Imported old records'), h('p', { class: 'muted' }, 'Paste the old app\'s exported data (JSON) to keep its history. Old passwords are never imported.'), h('p', {}, h('a', { href: '#legacy' }, 'Browse old records')), importBox());
   const sm = await statusCard(s.settings);
   const sck = scriptCheckCard(s.settings.script_checks, reload);
+  const bkCard = await backupsCard();
   const chCard = await channelsCard();
   const catCard = await categoriesCard();
   const ctj = h('input', { type: 'text', value: (s.settings.created_tracking_jobs || []).join(', '), placeholder: 'e.g. Title finder' });
@@ -204,7 +206,7 @@ export async function settingsPage(root, me) {
     field('Jobs counted this way', ctj, 'Comma separated, same names as the Job field under People.'),
     (() => { const b = h('button', { class: 'btn primary', type: 'button' }, 'Save'); b.addEventListener('click', busy(b, async () => { try { await post('/api/admin/settings', { created_tracking_jobs: ctj.value.split(',').map((x) => x.trim()).filter(Boolean) }); announce('Saved ✓ Press Sync now to load recent tasks.'); } catch (e) { announce(e.message, 'err'); } })); return b; })());
   const aud = h('section', { class: 'card' }, h('h2', {}, 'Audit history'), h('p', { class: 'muted' }, 'Every correction, approval and setting change.'), h('a', { class: 'btn', href: '#audit' }, 'Open audit history'));
-  const secs = [[net, 'Office network'], [outage, 'Outage'], [cuCard, 'ClickUp'], [sm, 'Statuses'], [chCard, 'Channels'], [catCard, 'Work categories'], [sck, 'Script checks'], [createdCard, 'Titles'], [shiftCard, 'Shifts'], [rep, 'Reports'], [aud, 'Audit']];
+  const secs = [[net, 'Office network'], [outage, 'Outage'], [cuCard, 'ClickUp'], [sm, 'Statuses'], [chCard, 'Channels'], [catCard, 'Work categories'], [sck, 'Script checks'], [createdCard, 'Titles'], [shiftCard, 'Shifts'], [rep, 'Reports'], [bkCard, 'Backups'], [aud, 'Audit']];
   secs.forEach(([el, l], i) => { el.id = 'sec' + i; });
   const jump = h('nav', { class: 'jump', 'aria-label': 'Settings sections' }, secs.map(([, l], i) => h('a', { href: '#settings', onclick: (ev) => { ev.preventDefault(); document.getElementById('sec' + i)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } }, l)));
   root.replaceChildren(jump, ...secs.map(([el]) => el), out);
@@ -380,4 +382,33 @@ export async function legacyPage(root) {
     card.append(h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, cols.map((c) => h('th', {}, c)))), h('tbody', {}, r.records.slice(0, 300).map((x) => h('tr', {}, cols.map((c) => h('td', {}, String(x[c] ?? '').slice(0, 80)))))))), h('p', { class: 'muted small' }, `Showing ${Math.min(300, r.records.length)} of ${r.records.length}.`));
   }
   root.replaceChildren(tabs, card);
+}
+
+// ---------------------------------------------------------------- BACKUPS & DOWNLOADS
+let me0 = null;
+async function backupsCard() {
+  const card = h('section', { class: 'card' }, h('h2', {}, 'Backups & downloads'));
+  let r; try { r = await get('/api/admin/backups'); } catch (e) { card.append(errBox(e)); return card; }
+  const age = r.newest_age_days;
+  card.append(h('p', {}, r.running ? chip('Backup running…', 'warn') : age == null ? chip('No backup yet', 'warn') : age > 9 ? chip(`Last backup ${age} days ago`, 'warn') : chip(`Last backup ${age === 0 ? 'today' : age + ' day' + (age > 1 ? 's' : '') + ' ago'} ✓`, 'ok'), ' ',
+    h('span', { class: 'muted small' }, 'An encrypted backup is made automatically every week and kept for as long as you like. It is stored in your Cloudflare account.')));
+  const now = h('button', { class: 'btn primary', type: 'button' }, 'Back up now');
+  now.addEventListener('click', busy(now, async () => {
+    try { for (let i = 0; i < 40; i++) { const x = await post('/api/admin/backups/run'); if (x.done) break; } announce('Backup saved ✓'); settingsPage(document.getElementById('main'), me0 || {}); }
+    catch (e) { announce(e.message, 'err'); }
+  }));
+  card.append(h('div', { class: 'row' }, now));
+  if (r.backups.length) {
+    card.append(h('details', { class: 'more' }, h('summary', {}, `Saved backups (${r.backups.length})`), ...r.backups.map((b) => h('div', { class: 'item row between' },
+      h('div', {}, h('strong', {}, b.date), h('div', { class: 'muted small' }, `${b.rows} records · ${Math.max(1, Math.round(b.bytes / 1024))} KB`)),
+      h('a', { class: 'btn small', href: `/api/admin/backups/${b.date}`, download: '' }, 'Download')))));
+  }
+  card.append(h('div', { class: 'subbox' }, h('strong', {}, 'Once a month: save a copy outside Cloudflare'),
+    h('p', { class: 'muted small' }, 'Download the latest backup and drop it in a private Google Drive folder. It is encrypted: it can only be opened with your ENCRYPTION_KEY (keep that key in your password manager).')));
+  const year = h('select', { 'aria-label': 'Year' }, [0, 1, 2].map((n) => { const y = new Date().getUTCFullYear() - n; return h('option', { value: y }, String(y)); }));
+  const link = (what, label) => { const a = h('a', { class: 'btn small', href: '#', download: '' }, label); a.addEventListener('click', () => { a.href = `/api/admin/export/${what}?year=${year.value}`; }); return a; };
+  card.append(h('div', { class: 'subbox' }, h('strong', {}, 'Spreadsheets (open in Google Sheets or Excel)'),
+    h('div', { class: 'row' }, h('span', { class: 'muted small' }, 'Year'), year, link('attendance', 'Attendance'), link('updates', 'Work updates'), link('monthly', 'Monthly summary')),
+    h('p', { class: 'muted small' }, 'In Google Sheets: File → Import → Upload. Contains employee data: keep the file private.')));
+  return card;
 }
