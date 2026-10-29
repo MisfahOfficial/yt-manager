@@ -3,7 +3,8 @@ import { requireDevice } from './auth.js';
 import { ipAllowed } from './lib/net.js';
 import { uuid } from './lib/crypto.js';
 import { checkDeposit } from './scriptcheck.js';
-import { rebuildEmployee, sweepMissingCheckouts, activeState, loadShiftContext, attendanceEnd } from './engine.js';
+import { rebuildEmployee, sweepMissingCheckouts, activeState, loadShiftContext, attendanceEnd, statusMap } from './engine.js';
+import { classify } from './lib/timer.js';
 import { localDate, localMidnightMs, addDays, localMinutes } from './lib/time.js';
 
 export function clientIp(req) { return req.headers.get('cf-connecting-ip') || null; }
@@ -63,7 +64,32 @@ export async function today(ctx) {
         WHERE t.deleted=0 AND lower(t.status)='in progress'
           AND (SELECT note FROM task_events e WHERE e.task_id=t.id AND e.kind='status' ORDER BY e.at_ms DESC,e.id DESC LIMIT 1)='approx'`).bind(emp.clickup_user_id).all()).results;
   }
+  // ---- My Work (everything the Today screen needs, from ClickUp data we already hold) ----
+  const map = await statusMap(env.DB, emp.job_role);
+  const mine = emp.clickup_user_id ? (await env.DB.prepare(
+    `SELECT t.id,t.name,t.url,t.status,t.due_ms FROM tasks t JOIN task_assignees ta ON ta.task_id=t.id
+       WHERE ta.clickup_user_id=? AND ta.end_ms IS NULL AND t.deleted=0 ORDER BY t.due_ms IS NULL, t.due_ms LIMIT 100`).bind(emp.clickup_user_id).all()).results : [];
+  const doneIds = new Set(open ? (await env.DB.prepare('SELECT DISTINCT task_id FROM deposits WHERE attendance_id=? AND task_id IS NOT NULL').bind(open.id).all()).results.map((r) => r.task_id) : []);
+  const my_work = mine.map((t) => ({ ...t, class: classify(t.status, map) })).filter((t) => !['done', 'ignore'].includes(t.class))
+    .map((t) => ({ id: t.id, name: t.name, url: t.url, status: t.status, due_ms: t.due_ms, class: t.class, active: task?.id === t.id,
+      can_switch: ['active', 'revision'].includes(t.class) && task?.id !== t.id, has_update: doneIds.has(t.id) }));
+  // tasks to ask about at check-out: timed this shift, already updated, or active
+  let worked = [];
+  if (open) {
+    const ids = new Set([...doneIds, ...(task ? [task.id] : []), ...(await env.DB.prepare('SELECT DISTINCT task_id FROM task_sessions WHERE employee_id=? AND (end_ms IS NULL OR end_ms>=?)').bind(emp.id, open.check_in_at).all()).results.map((r) => r.task_id)]);
+    for (const id of ids) {
+      const t = await env.DB.prepare('SELECT id,name,url FROM tasks WHERE id=?').bind(id).first();
+      if (!t) continue;
+      const last = await env.DB.prepare('SELECT link,completed,pending,created_at FROM deposits WHERE employee_id=? AND task_id=? ORDER BY created_at DESC LIMIT 1').bind(emp.id, id).first();
+      worked.push({ ...t, has_update: doneIds.has(id), last_link: last?.link || null, last_update_at: last?.created_at || null, active: task?.id === id });
+    }
+  }
+  const sh = await loadShiftContext(env.DB, emp.id, dayStart - 86400000, dayStart + 2 * 86400000);
+  const todayWin = sh.windows.find((w) => w.date === localDate(now));
+  const shiftName = todayWin ? sh.asg.find((a) => a.effective_from <= todayWin.date && (!a.effective_to || todayWin.date <= a.effective_to))?.shift : null;
+  const asked = (await env.DB.prepare('SELECT id,check_in_at FROM attendance WHERE employee_id=? AND asked_at IS NOT NULL AND status=\'missing_checkout\'').bind(emp.id).all()).results;
   return json({
+    shift: todayWin ? { start_ms: todayWin.start, end_ms: todayWin.end, name: shiftName?.name || null } : null, my_work, worked_tasks: worked, asked,
     created, unverified_tasks: unverified, server_time: now, state: open ? 'checked_in' : 'checked_out', attendance: view(open || last),
     deposit_count: dep, active_task: task ? { ...task, kind: state.active.kind, since: state.active.start } : null,
     needs_task_choice: choices, recorded_ms_today: recorded, device_status: dev?.status || 'none',
@@ -125,7 +151,6 @@ export function depositStmt(db, emp, attendanceId, requestId, d, now, id = uuid(
 export async function checkDepositTarget(db, emp, d) {
   if (d.task_id) await assertTaskAllowed(db, emp, d.task_id);
   else if (!d.taskless_reason) throw bad('task_or_reason', 'Pick a task, or explain why this work has no task.');
-  if (!d.is_complete && !d.pending) throw bad('missing_pending', 'Say what is still pending, or mark the work complete.');
 }
 
 export async function checkOut(ctx) {
@@ -142,6 +167,15 @@ export async function checkOut(ctx) {
   let exception = null, depositId = null, depositLink = null;
   if (body.exception_reason) {
     exception = str(body.exception_reason, 'reason', { min: 10, max: 500 });
+  } else if (Array.isArray(body.updates) && body.updates.length) {
+    // several tasks in one go; all saved together with the check-out
+    if (body.updates.length > 10) throw bad('too_many', 'Too many updates at once.');
+    for (let i = 0; i < body.updates.length; i++) {
+      const d = validateDeposit(body.updates[i]);
+      await checkDepositTarget(env.DB, emp, d);
+      const ds = depositStmt(env.DB, emp, open.id, i === 0 ? requestId : `${requestId}:${i}`, d, now);
+      stmts.push(ds.stmt); if (i === 0) { depositId = ds.id; depositLink = d.link; }
+    }
   } else if (body.deposit) {
     const d = validateDeposit(body.deposit);
     await checkDepositTarget(env.DB, emp, d);
@@ -184,13 +218,9 @@ export async function myHistory(ctx) {
 
 // ---- corrections (admin, or manager with can_correct for own team) ----
 export async function assertCanCorrect(ctx, employeeId) {
-  const { emp, env } = ctx;
-  if (emp.role === 'admin') return;
-  if (emp.role === 'manager' && emp.can_correct) {
-    const e = await env.DB.prepare('SELECT manager_id FROM employees WHERE id=?').bind(employeeId).first();
-    if (e && e.manager_id === emp.id) return;
-  }
-  throw forbidden('cannot_correct', 'You are not allowed to correct attendance for this person.');
+  const { canDecide } = await import('./corrections.js');
+  if (await canDecide(ctx, employeeId)) return;
+  throw forbidden('cannot_correct', ctx.emp.id === employeeId ? 'You cannot change your own record. Ask the Owner.' : 'You are not allowed to correct attendance for this person.');
 }
 
 export async function correctAttendance(ctx) {

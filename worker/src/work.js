@@ -52,6 +52,8 @@ export async function chooseActive(ctx) {
   const taskId = str(body.task_id, 'task', { max: 64 });
   const ok = await env.DB.prepare('SELECT 1 FROM task_assignees WHERE task_id=? AND clickup_user_id=? AND end_ms IS NULL').bind(taskId, emp.clickup_user_id || '').first();
   if (!ok) throw forbidden('task_not_yours', 'That task is not assigned to you.');
+  const trow = await env.DB.prepare('SELECT status FROM tasks WHERE id=?').bind(taskId).first();
+  if (!['active', 'revision'].includes(classify(trow?.status, await statusMap(env.DB, emp.job_role)))) throw conflict('not_in_progress', 'Start this task in ClickUp first. You can only switch to a task that is In Progress.');
   await env.DB.prepare('INSERT INTO active_choices(employee_id,task_id,at_ms) VALUES (?,?,?)').bind(emp.id, taskId, now).run();
   await audit(env.DB, { at: now, actor: emp.id, action: 'active_task_chosen', entity: 'task', entityId: taskId });
   const st = await activeState(env, emp.id, now);
@@ -69,16 +71,18 @@ export async function teamOverview(ctx) {
   for (const p of people) {
     const pmap = await statusMap(env.DB, p.job_role);
     const open = await env.DB.prepare("SELECT id,check_in_at,status FROM attendance WHERE employee_id=? AND status IN ('open','missing_checkout') ORDER BY check_in_at DESC LIMIT 1").bind(p.id).first();
-    const sess = await env.DB.prepare('SELECT s.task_id,s.kind,s.start_ms,t.name,t.url FROM task_sessions s LEFT JOIN tasks t ON t.id=s.task_id WHERE s.employee_id=? AND s.end_ms IS NULL').bind(p.id).first();
+    const sess = await env.DB.prepare('SELECT s.task_id,s.kind,s.start_ms,t.name,t.url,t.due_ms FROM task_sessions s LEFT JOIN tasks t ON t.id=s.task_id WHERE s.employee_id=? AND s.end_ms IS NULL').bind(p.id).first();
     const dep = await env.DB.prepare('SELECT COUNT(*) n FROM deposits WHERE employee_id=? AND created_at>=?').bind(p.id, dayStart).first();
     const todayAtt = await env.DB.prepare('SELECT COUNT(*) n FROM attendance WHERE employee_id=? AND check_in_at>=?').bind(p.id, dayStart).first();
     const blocked = p.clickup_user_id ? (await env.DB.prepare(
       `SELECT t.id,t.name,t.url,t.status FROM tasks t JOIN task_assignees ta ON ta.task_id=t.id WHERE ta.clickup_user_id=? AND ta.end_ms IS NULL AND t.deleted=0`).bind(p.clickup_user_id).all()).results.filter((t) => classify(t.status, pmap) === 'paused') : [];
     out.push({
+      latest_update: await env.DB.prepare('SELECT d.completed text,d.created_at at,d.review_note,t.name task_name FROM deposits d LEFT JOIN tasks t ON t.id=d.task_id WHERE d.employee_id=? ORDER BY d.created_at DESC LIMIT 1').bind(p.id).first(),
+      unreviewed: (await env.DB.prepare('SELECT COUNT(*) n FROM deposits WHERE employee_id=? AND review_note IS NULL AND created_at>=?').bind(p.id, now - 7 * 86400000).first()).n,
       id: p.id, name: p.name, job_role: p.job_role,
       attendance: open ? (open.status === 'open' ? 'checked_in' : 'missing_checkout') : todayAtt.n ? 'done_for_today' : 'not_in',
       since: open?.check_in_at || null,
-      active_task: sess ? { id: sess.task_id, name: sess.name, url: sess.url, kind: sess.kind, since: sess.start_ms } : null,
+      active_task: sess ? { id: sess.task_id, name: sess.name, url: sess.url, due_ms: sess.due_ms, kind: sess.kind, since: sess.start_ms } : null,
       blockers: blocked, deposits_today: dep.n,
       missing_submission: !!open && open.status === 'open' && dep.n === 0,
       clickup_linked: !!p.clickup_user_id,
@@ -166,16 +170,55 @@ export async function taskDetail(ctx) {
   const { env, emp, params } = ctx;
   const t = await env.DB.prepare('SELECT * FROM tasks WHERE id=?').bind(params.id).first();
   if (!t) throw notFound();
+  let visible = null; // null = all submissions; otherwise only these employees'
   if (emp.role === 'employee') {
     const mine = await env.DB.prepare('SELECT 1 FROM task_assignees WHERE task_id=? AND clickup_user_id=?').bind(t.id, emp.clickup_user_id || '').first();
     if (!mine) throw forbidden();
+    visible = [emp.id];
   } else await assertManagesTask(ctx, t.id);
   const events = (await env.DB.prepare('SELECT * FROM task_events WHERE task_id=? ORDER BY at_ms,id').bind(t.id).all()).results;
   const map = await statusMap(env.DB);
   const due = events.filter((e) => e.kind === 'due');
+  const dls = deliveries(events, map);
+  const dl = applicableDeadline(due);
+  const owner = (await env.DB.prepare('SELECT e.id,e.name,e.job_role FROM task_assignees ta JOIN employees e ON e.clickup_user_id=ta.clickup_user_id WHERE ta.task_id=? AND ta.end_ms IS NULL').bind(t.id).all()).results;
+  const subs = (await env.DB.prepare('SELECT d.id,d.employee_id,e.name employee,d.created_at,d.link,d.completed,d.pending,d.review_note,d.check_json FROM deposits d JOIN employees e ON e.id=d.employee_id WHERE d.task_id=? ORDER BY d.created_at DESC LIMIT 100').bind(t.id).all()).results
+    .filter((d) => !visible || visible.includes(d.employee_id));
+  const ses = (await env.DB.prepare('SELECT employee_id,kind,start_ms,end_ms FROM task_sessions WHERE task_id=? ORDER BY start_ms').bind(t.id).all()).results
+    .filter((s) => !visible || visible.includes(s.employee_id));
+  const now = ctx.now;
+  const byDay = new Map(); let orig = 0, rev = 0;
+  for (const s of ses) {
+    const ms = Math.max(0, (s.end_ms ?? now) - s.start_ms);
+    const d = localDate(s.start_ms);
+    const row = byDay.get(d) || { date: d, original_ms: 0, revision_ms: 0 };
+    if (s.kind === 'revision') { row.revision_ms += ms; rev += ms; } else { row.original_ms += ms; orig += ms; }
+    byDay.set(d, row);
+  }
+  // plain-language story, newest first
+  const story = [];
+  const who = new Map((await env.DB.prepare('SELECT clickup_user_id id,name FROM employees WHERE clickup_user_id IS NOT NULL').all()).results.map((r) => [r.id, r.name]));
+  let dueNow = null;
+  for (const e of events) {
+    if (e.kind === 'assignee_add') story.push({ at: e.at_ms, text: `Assigned to ${who.get(e.to_val) || 'someone'}` });
+    else if (e.kind === 'status' && e.note !== 'approx') story.push({ at: e.at_ms, text: `Moved to ${e.to_val}` });
+    else if (e.kind === 'status') story.push({ at: e.at_ms, text: `Now ${e.to_val} (exact time not known)`, approx: true });
+    else if (e.kind === 'due') {
+      const to = e.to_val ? Number(e.to_val) : null;
+      if (dueNow != null && to != null) story.push({ at: e.at_ms, text: 'Deadline moved', from_ms: dueNow, to_ms: to, before_due: e.at_ms <= dueNow });
+      else if (to != null) story.push({ at: e.at_ms, text: 'Deadline set', to_ms: to });
+      dueNow = to;
+    }
+  }
+  for (const d of dls) story.push({ at: d.at, text: d.kind === 'original' ? 'Ready for Upload (first delivery)' : 'Delivered again after changes' });
+  for (const r of (await env.DB.prepare('SELECT notes,created_at FROM revisions WHERE task_id=?').bind(t.id).all()).results) story.push({ at: r.created_at, text: 'Changes requested', note: r.notes });
+  story.sort((a, b) => b.at - a.at);
   return json({
-    task: t, deliveries: deliveries(events, map), deadline: applicableDeadline(due),
-    history: events.filter((e) => e.kind === 'status').map((e) => ({ at: e.at_ms, from: e.from_val, to: e.to_val, source: e.source, approx: e.note === 'approx' })),
+    task: { id: t.id, name: t.name, url: t.url, status: t.status, due_ms: t.due_ms, list_name: t.list_name },
+    assignees: owner,
+    facts: { deadline_ms: dl.deadline, original_deadline_ms: dl.original ?? null, first_ready_ms: dls[0]?.at ?? null, original_ms: orig, revision_ms: rev, last_update_ms: subs[0]?.created_at ?? null },
+    submissions: subs, time_by_day: [...byDay.values()].sort((a, b) => b.date.localeCompare(a.date)), story,
+    deliveries: dls, deadline: dl,
     revisions: (await env.DB.prepare('SELECT id,notes,links,created_at,due_ms,clickup_status FROM revisions WHERE task_id=? ORDER BY created_at').bind(t.id).all()).results,
   });
 }

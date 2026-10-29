@@ -7,7 +7,7 @@ import { periodRange, localMidnightMs, addDays, localDate, prevPeriod, isYmd, we
 
 const MIN = 60000;
 
-export async function employeeReport(env, emp, kind, period, now, map, trackJobs = []) {
+export async function employeeReport(env, emp, kind, period, now, map, trackJobs = [], goals = {}) {
   const { from, to } = periodRange(kind, period);
   const fromMs = localMidnightMs(from), toMs = localMidnightMs(addDays(to, 1));
   const db = env.DB;
@@ -123,6 +123,15 @@ export async function employeeReport(env, emp, kind, period, now, map, trackJobs
     }
     created.days = Object.entries(created.days).sort().map(([date, n]) => ({ date, count: n }));
   }
+  // goal: weekly target per job, scaled to the period. Titles for task-creating jobs, delivered tasks for everyone else.
+  let goal = null;
+  const perWeek = +goals[String(emp.job_role || '').toLowerCase()] || 0;
+  if (perWeek > 0) {
+    const days = (Date.parse(to) - Date.parse(from)) / 86400000 + 1;
+    const target = Math.max(1, Math.round(perWeek * days / 7));
+    const count = created ? created.total : deliveredTasks.length;
+    goal = { per_week: perWeek, target, count, pct: Math.round(count / target * 100), metric: created ? 'titles created' : 'tasks delivered' };
+  }
   const attention = [];
   if (absent) attention.push(`${absent} unexplained absence day(s)`);
   if (missingCo) attention.push(`${missingCo} missing check-out(s) need correction`);
@@ -143,7 +152,7 @@ export async function employeeReport(env, emp, kind, period, now, map, trackJobs
     deposits: { count: deps.length, missing_days: missingDeposits, checkout_exceptions: exceptions },
     delivery: { delivered: deliveredTasks.length, on_time: onTime, overdue, no_deadline: noDeadline, revision_deliveries: revDelivered, denominator: onTime + overdue, tasks: deliveredTasks, label: 'Ready for Upload / Delivered (not quality-approved)' },
     recorded_time: { original_ms: origMs, revision_ms: revMs, note: 'Recorded task time while checked in and in an eligible status; not proof of focused editing.' },
-    created, script_checks: scriptChecks, blockers, gaps: gapsOut, attention,
+    goal, created, script_checks: scriptChecks, blockers, gaps: gapsOut, attention,
     sources: { attendance_ids: att.map((a) => a.id), deposit_ids: deps.map((d) => d.id), task_ids: [...byTask.keys(), ...deliveredTasks.map((t) => t.task_id)] },
   };
 }
@@ -158,22 +167,35 @@ function rollup(list) {
   };
 }
 
-export async function buildReport(env, ids, kind, period, now) {
+export const AGAINST = { previous: 'the previous period', same_week_last_month: 'the same week last month' };
+export function comparePeriod(kind, period, against) {
+  if (against === 'same_week_last_month' && kind === 'weekly') return addDays(period, -28);
+  return prevPeriod(kind, period);
+}
+
+// opts.comparison (Owner only): also compute each person against an earlier period.
+export async function buildReport(env, ids, kind, period, now, opts = {}) {
   const emps = ids.length ? (await env.DB.prepare(`SELECT id,name,job_role,clickup_user_id FROM employees WHERE id IN (${ids.map(() => '?').join(',')}) AND role<>'admin' AND active=1 ORDER BY name`).bind(...ids).all()).results : [];
   const rows = [];
   const trackJobs = (await getSetting(env.DB, 'created_tracking_jobs', [])).map((j) => String(j).toLowerCase());
+  const goals = Object.fromEntries(Object.entries(await getSetting(env.DB, 'job_goals', {})).map(([k, v]) => [k.toLowerCase(), v]));
   const maps = new Map(); // one map per job role
   const mapFor = async (e) => { const k = e.job_role || ''; if (!maps.has(k)) maps.set(k, await statusMap(env.DB, e.job_role)); return maps.get(k); };
-  for (const e of emps) rows.push(await employeeReport(env, e, kind, period, now, await mapFor(e), trackJobs));
+  for (const e of emps) rows.push(await employeeReport(env, e, kind, period, now, await mapFor(e), trackJobs, goals));
   const out = { kind, period, range: periodRange(kind, period), generated_at: now, incomplete_period: rows.some((r) => r.incomplete_period), employees: rows, totals: rollup(rows),
     notes: ['No automatic pay, raise or disciplinary decisions are made from this report.', 'Employees are not ranked: shifts and video complexity differ.'] };
-  if (kind === 'monthly') {
-    const pp = prevPeriod(kind, period);
+  if (opts.comparison) {
+    const against = opts.against || 'previous';
+    const pp = comparePeriod(kind, period, against);
     const prevRows = [];
-    for (const e of emps) prevRows.push(await employeeReport(env, e, kind, pp, now, await mapFor(e), trackJobs));
+    for (const e of emps) prevRows.push(await employeeReport(env, e, kind, pp, now, await mapFor(e), trackJobs, goals));
+    const cnt = (r) => (r.created ? r.created.total : r.delivery.delivered);
+    rows.forEach((r, i) => { const p0 = prevRows[i]; r.comparison = { period: pp, delivered_delta: cnt(r) - cnt(p0), goal_pct_delta: r.goal && p0.goal ? r.goal.pct - p0.goal.pct : null, days_delta: r.attendance.present_days - p0.attendance.present_days, time_delta_ms: (r.recorded_time.original_ms + r.recorded_time.revision_ms) - (p0.recorded_time.original_ms + p0.recorded_time.revision_ms) }; });
     const pt = rollup(prevRows);
     const comparable = pt.scheduled_days > 0 && out.totals.scheduled_days > 0;
-    out.previous = { period: pp, totals: pt, comparable, comparable_note: comparable ? 'Compare per scheduled day; month lengths and shifts differ.' : 'Not comparable (no scheduled days in one of the months).' };
+    out.previous = { period: pp, against, label: AGAINST[against], totals: pt, comparable, comparable_note: comparable ? 'Compare per scheduled day; period lengths and shifts differ.' : 'Not comparable (no scheduled days in one of the periods).' };
+  }
+  if (kind === 'monthly') {
     const rep = new Map();
     for (const r of rows) for (const b of r.blockers) rep.set(b.task_id, (rep.get(b.task_id) || 0) + 1);
     out.repeated_blockers = [...rep.entries()].filter(([, n]) => n > 1).map(([task_id, n]) => ({ task_id, times: n }));
@@ -193,6 +215,8 @@ export async function buildReport(env, ids, kind, period, now) {
   return out;
 }
 
+export const DEFAULT_LAYOUT = { columns: { goal: true, delivered: true, days: true, time: false, late: false, titles: false }, compare: { enabled: true, against: 'previous' } };
+
 export async function getReport(ctx) {
   const { env, url, now, emp } = ctx;
   if (emp.role === 'employee') throw forbidden();
@@ -204,7 +228,11 @@ export async function getReport(ctx) {
   const scope = emp.role === 'admin' ? 'all' : emp.id;
   const finished = localMidnightMs(addDays(range.to, 1)) <= now;
   // Always recomputed from source records so corrections show immediately; the stored snapshot is an archive.
-  const rep = await buildReport(env, ids, kind, period, now);
+  const layout = await getSetting(env.DB, 'report_layout', DEFAULT_LAYOUT);
+  // The comparison with earlier periods is for the Owner only: managers and employees never get it.
+  const wantCompare = emp.role === 'admin' && layout.compare?.enabled !== false;
+  const rep = await buildReport(env, ids, kind, period, now, { comparison: wantCompare, against: layout.compare?.against });
+  rep.layout = { columns: layout.columns || DEFAULT_LAYOUT.columns, compare: wantCompare ? { enabled: true, against: layout.compare?.against || 'previous' } : { enabled: false } };
   if (finished) {
     await env.DB.prepare('INSERT INTO report_snapshots(kind,period,scope,generated_at,body) VALUES (?,?,?,?,?) ON CONFLICT(kind,period,scope) DO UPDATE SET generated_at=excluded.generated_at,body=excluded.body')
       .bind(kind, period, scope, now, JSON.stringify(rep)).run();
@@ -226,4 +254,28 @@ export async function autoReports(env, now) {
     const rep = await buildReport(env, ids, kind, period, now);
     await env.DB.prepare("INSERT OR IGNORE INTO report_snapshots(kind,period,scope,generated_at,body) VALUES (?,?,'all',?,?)").bind(kind, period, now, JSON.stringify(rep)).run();
   }
+}
+
+// Employee's own goal summary. Never contains comparisons with earlier periods or anyone else's data.
+export async function myReport(ctx) {
+  const { env, emp, url, now } = ctx;
+  const kind = url.searchParams.get('kind') === 'monthly' ? 'monthly' : 'weekly';
+  const today = localDate(now);
+  const period = kind === 'weekly' ? weekStart(today) : today.slice(0, 7);
+  const trackJobs = (await getSetting(env.DB, 'created_tracking_jobs', [])).map((j) => String(j).toLowerCase());
+  const goals = Object.fromEntries(Object.entries(await getSetting(env.DB, 'job_goals', {})).map(([k, v]) => [k.toLowerCase(), v]));
+  const full = await employeeReport(env, { id: emp.id, name: emp.name, job_role: emp.job_role, clickup_user_id: emp.clickup_user_id }, kind, period, now, await statusMap(env.DB, emp.job_role), trackJobs, goals);
+  const { from, to } = periodRange(kind, period);
+  const deps = (await env.DB.prepare('SELECT created_at FROM deposits WHERE employee_id=? AND created_at>=? AND created_at<?').bind(emp.id, localMidnightMs(from), localMidnightMs(addDays(to, 1))).all()).results;
+  const att = (await env.DB.prepare('SELECT id,check_in_at,check_out_at,status FROM attendance WHERE employee_id=? AND check_in_at>=? AND check_in_at<? ORDER BY check_in_at DESC').bind(emp.id, localMidnightMs(from), localMidnightMs(addDays(to, 1))).all()).results;
+  const pend = (await env.DB.prepare("SELECT attendance_id,status FROM correction_requests WHERE employee_id=? AND status='pending'").bind(emp.id).all()).results;
+  return json({
+    kind, period, range: { from, to }, incomplete_period: full.incomplete_period,
+    goal: full.goal, days_present: full.attendance.present_days, days_scheduled: full.attendance.scheduled_days,
+    recorded_ms: full.recorded_time.original_ms + full.recorded_time.revision_ms, updates: deps.length,
+    tasks_done: full.delivery.tasks.map((t) => ({ task_id: t.task_id, name: t.name, url: t.url, delivered_at: t.delivered_at })),
+    created: full.created ? { total: full.created.total, by_code: full.created.by_code } : null,
+    attendance: att.map((a) => ({ id: a.id, check_in_at: a.check_in_at, check_out_at: a.check_out_at, status: a.status, updates: deps.filter((d) => localDate(d.created_at) === localDate(a.check_in_at)).length, correction_pending: pend.some((p) => p.attendance_id === a.id) })),
+    note: 'Recorded task time is time on a task while clocked in. It is not a measure of effort or quality.',
+  });
 }

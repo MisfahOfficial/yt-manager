@@ -172,6 +172,19 @@ const SETTING_KEYS = {
   revisions_status: (v) => (v ? str(v, 'status', { max: 60 }) : null),
   status_map: (v) => { if (!v || typeof v !== 'object') throw bad('bad_map'); const ok = ['active', 'revision', 'paused', 'done', 'other', 'ignore']; for (const [k, c] of Object.entries(v)) if (!ok.includes(c) || k.length > 60) throw bad('bad_map', 'Status mapping is not valid.'); return Object.fromEntries(Object.entries(v).map(([k, c]) => [k.toLowerCase().trim(), c])); },
   auto_reports: (v) => !!v,
+  job_goals: (v) => {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) throw bad('bad_goals', 'Goals are not valid.');
+    const out = {};
+    for (const [job, n] of Object.entries(v)) { if (job.length > 40) throw bad('bad_goals'); out[job.toLowerCase().trim()] = int(n, 'goal', { min: 0, max: 1000 }); }
+    return out;
+  },
+  report_layout: (v) => {
+    const keys = ['goal', 'delivered', 'days', 'time', 'late', 'titles'];
+    if (!v || typeof v !== 'object' || !v.columns) throw bad('bad_layout', 'Report layout is not valid.');
+    const columns = Object.fromEntries(keys.map((k) => [k, !!v.columns[k]]));
+    const against = ['previous', 'same_week_last_month'].includes(v.compare?.against) ? v.compare.against : 'previous';
+    return { columns, compare: { enabled: v.compare?.enabled !== false, against } };
+  },
   created_tracking_jobs: (v) => { if (!Array.isArray(v) || v.length > 10) throw bad('bad_jobs', 'Job list is not valid.'); return v.map((x) => str(x, 'job', { max: 40 })); },
   script_checks: (v) => {
     if (!v || typeof v !== 'object' || !v.jobs || typeof v.jobs !== 'object') throw bad('bad_checks', 'Script check settings are not valid.');
@@ -197,7 +210,7 @@ const SETTING_KEYS = {
 };
 export async function getSettings(ctx) {
   const out = {};
-  for (const k of Object.keys(SETTING_KEYS)) out[k] = await getSetting(ctx.env.DB, k, k === 'sync_time_min' ? 1110 : k === 'office_ips' ? [] : k === 'status_map' ? {} : k === 'auto_reports' ? true : k === 'role_status_maps' ? {} : k === 'script_checks' ? { jobs: {} } : k === 'created_tracking_jobs' ? [] : null);
+  for (const k of Object.keys(SETTING_KEYS)) out[k] = await getSetting(ctx.env.DB, k, k === 'sync_time_min' ? 1110 : k === 'office_ips' ? [] : k === 'status_map' ? {} : k === 'auto_reports' ? true : k === 'role_status_maps' ? {} : k === 'script_checks' ? { jobs: {} } : k === 'created_tracking_jobs' ? [] : k === 'job_goals' ? {} : k === 'report_layout' ? { columns: { goal: true, delivered: true, days: true, time: false, late: false, titles: false }, compare: { enabled: true, against: 'previous' } } : null);
   return json({ settings: out, detected_ip: clientIp(ctx.req) });
 }
 export async function putSettings(ctx) {

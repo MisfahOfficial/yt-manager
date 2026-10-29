@@ -7,6 +7,7 @@ import * as rep from './reports.js';
 import * as adm from './admin.js';
 import { sweepMissingCheckouts } from './engine.js';
 import * as sc from './scriptcheck.js';
+import * as cr from './corrections.js';
 
 const E = 'employee', M = 'manager', A = 'admin';
 // [method, path, handler, who]  who: 'public' | roles allowed
@@ -26,6 +27,7 @@ const ROUTES = [
   ['POST', '/api/checkin', att.checkIn, [E, M, A]],
   ['POST', '/api/checkout', att.checkOut, [E, M, A]],
   ['GET', '/api/history', att.myHistory, [E, M, A]],
+  ['GET', '/api/me/report', rep.myReport, [E, M, A]],
   ['GET', '/api/tasks/mine', work.myTasks, [E, M, A]],
   ['POST', '/api/deposits', work.createDeposit, [E, M, A]],
   ['POST', '/api/active-task', work.chooseActive, [E, M, A]],
@@ -43,6 +45,11 @@ const ROUTES = [
   ['GET', '/api/attendance', adm.attendanceList, [M, A]],
   ['POST', '/api/attendance', att.addMissingAttendance, [M, A]],
   ['POST', '/api/attendance/:id/correct', att.correctAttendance, [M, A]],
+  ['POST', '/api/attendance/:id/ask', cr.askEmployee, [M, A]],
+  ['POST', '/api/correction-requests', cr.createRequest, [E, M, A]],
+  ['GET', '/api/correction-requests', cr.listRequests, [E, M, A]],
+  ['POST', '/api/correction-requests/:id/decide', cr.decide, [M, A]],
+  ['POST', '/api/progress', work.createDeposit, [E, M, A]],
 
   ['GET', '/api/admin/employees', adm.listEmployees, [A]],
   ['POST', '/api/admin/employees', adm.createEmployee, [A]],
