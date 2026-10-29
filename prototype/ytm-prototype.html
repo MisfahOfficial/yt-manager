@@ -76,10 +76,12 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:8px;bord
 const $ = (s, r = document) => r.querySelector(s);
 const main = $('#main'), nav = $('#nav'), dlg = $('#dlg');
 let role = 'employee', state = 'before', page = 'today', showErr = false, taskId = null, tdTab = 'work', rpt = 'week';
-const corr = { sara: 'pending', ali: 'open' };
+const corr = { sara: 'pending', ali: 'open', omar: 'pending' };
+const layout = { goal: true, delivered: true, days: true, time: false, late: false, titles: false, compare: true, against: 'last week' };
+const goals = { Editor: 6, Writer: 2, Designer: 5, 'Title finder': 20 };
 const WHO = {
-  employee: { name: 'Sara', job: 'Editor', task: 'V4 · Intro edit', st: 'In Progress', due: 'Fri 31 Oct', today: '2 h 05', more: [['V3 · Thumbnail set', 'Mon 3 Nov', 'sw'], ['V2 · Title research', 'Tue 4 Nov', 'blocked'], ['V1 · Outro cleanup', '', 'sw']], done: [['V4 · Intro edit', 'Tue 28'], ['V1 · Script draft', 'Mon 27']], doing: 'V3 · Thumbnail set', week: { pct: 83, of: '5 of 6 tasks delivered', days: '4 of 5 days', time: '22 h 10' } },
-  manager: { name: 'Omar', job: 'Writer', task: 'V2 · Script: Ancient Rome', st: 'In Progress', due: 'Thu 30 Oct', today: '1 h 40', more: [['V5 · Script: Silk Road', 'Mon 3 Nov', 'sw']], done: [['V1 · Script: Vikings', 'Tue 28']], doing: 'V5 · Script: Silk Road', week: { pct: 100, of: '2 of 2 tasks delivered', days: '5 of 5 days', time: '19 h 30' } },
+  employee: { name: 'Sara', job: 'Editor', task: 'V4 · Intro edit', st: 'In Progress', due: 'Fri 31 Oct', today: '2 h 05', more: [['V3 · Thumbnail set', 'Mon 3 Nov', 'sw'], ['V2 · Title research', 'Tue 4 Nov', 'blocked'], ['V1 · Outro cleanup', '', 'todo']], done: [['V4 · Intro edit', 'Tue 28'], ['V1 · Script draft', 'Mon 27']], doing: 'V3 · Thumbnail set', week: { pct: 83, of: '5 of 6 tasks delivered', days: '4 of 5 days', time: '22 h 10' } },
+  manager: { name: 'Omar', job: 'Writer', task: 'V2 · Script: Ancient Rome', st: 'In Progress', due: 'Thu 30 Oct', today: '1 h 40', more: [['V5 · Script: Silk Road', 'Mon 3 Nov', 'todo']], done: [['V1 · Script: Vikings', 'Tue 28']], doing: 'V5 · Script: Silk Road', week: { pct: 100, of: '2 of 2 tasks delivered', days: '5 of 5 days', time: '19 h 30' } },
   admin: { name: 'Owner', job: 'Owner', task: null, st: '', due: '', today: '0 h 00', more: [], done: [], doing: null, week: { pct: 100, of: 'No personal goal set', days: '5 of 5 days', time: '0 h 00' } },
 };
 const who = () => WHO[role];
@@ -120,7 +122,7 @@ function employeeView() {
     <button class="btn stop xl" id="clockOut">Clock out</button></section>
     <section class="card"><div class="row between"><h2>My Work</h2><span class="muted small">Today ${W.today}</span></div>
       ${W.task ? `<div class="row between"><div><strong>${W.task}</strong><div class="row small" style="margin-top:2px"><span class="chip ok">${W.st}</span><span class="muted">Due ${W.due}</span></div></div><button class="btn small" id="upBtn">Update</button></div>` : '<p class="muted">No tasks assigned to you.</p>'}
-      ${W.more.length ? `<details style="margin-top:10px"><summary class="muted">${W.more.length} more task${W.more.length > 1 ? 's' : ''}</summary>${W.more.map(([n, d, k]) => `<div class="item row between"><div>${n}${d ? ` <span class="muted small">· ${d}</span>` : ''}</div>${k === 'blocked' ? '<span class="chip warn">Blocked</span>' : '<button class="btn small">Switch</button>'}</div>`).join('')}</details>` : ''}</section>`;
+      ${W.more.length ? `<details style="margin-top:10px"><summary class="muted">${W.more.length} more task${W.more.length > 1 ? 's' : ''}</summary>${W.more.map(([n, d, k]) => `<div class="item row between"><div>${n}${d ? ` <span class="muted small">· ${d}</span>` : ''}</div>${k === 'blocked' ? '<span class="chip warn">Blocked</span>' : k === 'todo' ? '<span class="chip">To Do</span>' : '<button class="btn small" data-act="switch" title="Time this task instead of the current one">Switch</button>'}</div>`).join('')}<p class="muted small" style="margin:8px 0 0">Switch = count your time on that task instead. Only one task is timed. Tasks still To Do start in ClickUp.</p></details>` : ''}</section>`;
   return `<section class="card hero">${date}<div class="state">Clocked out 20:03</div><div class="muted">6 h 01 min</div>
     <p><span class="chip ok">✓ Work saved</span> <a href="#" id="viewSaved">View</a></p></section>`;
 }
@@ -165,7 +167,7 @@ function reqCorrDlg() {
     <label class="f"><span>Clock-out should be</span><input type="time" value="20:00"></label>
     <label class="f"><span>Reason</span><textarea rows="2" placeholder="One sentence"></textarea></label>
     <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="x">Cancel</button><button class="btn primary" id="ok">Send</button></div>`);
-  $('#x').onclick = close; $('#ok').onclick = () => { close(); toast('Sent to your manager'); };
+  $('#x').onclick = close; $('#ok').onclick = () => { close(); toast(role === 'employee' ? 'Sent to your manager' : 'Sent to the Owner'); };
 }
 
 /* ---------------- MANAGER / ADMIN ---------------- */
@@ -211,12 +213,30 @@ function taskDetail() {
 
 function reportsView() {
   const isOwner = role === 'admin';
-  const rows = [['Sara', 83, '5 of 6', '4 of 5', '+1 task', 'up'], ['Ali', 67, '4 of 6', '4 of 5', '−1 task', 'down'], ['Huda', 100, '6 of 6', '5 of 5', 'same', ''], ['Zayn', 50, '3 of 6', '3 of 5', '−2 tasks', 'down']];
-  return `<div class="tabs"><button class="btn on">This week</button><button class="btn">This month</button></div>
-  <section class="card"><div class="row between"><h2 style="margin:0">Goal achieved</h2>${isOwner ? '<span class="chip owner">Owner view: comparison included</span>' : '<span class="muted small">No comparison with earlier periods</span>'}</div>
-  <table style="margin-top:8px"><thead><tr><th>Person</th><th>Goal</th><th>Tasks delivered</th><th>Days present</th>${isOwner ? '<th>vs last week</th>' : ''}</tr></thead><tbody>
-  ${rows.map(([n, p, t, d, c, k]) => `<tr><td><strong>${n}</strong></td><td><div class="row"><span style="min-width:2.6em">${p}%</span><div class="bar" style="width:80px"><i style="width:${p}%"></i></div></div></td><td>${t}</td><td>${d}</td>${isOwner ? `<td class="${k}">${c}</td>` : ''}</tr>`).join('')}</tbody></table>
-  <p class="muted small">Goal = tasks delivered against the weekly target set by the Owner for each job. Shifts and task size differ, so this is not a ranking.</p></section>`;
+  const L = layout;
+  const rows = [['Sara', 'Editor', 83, '5 of 6', '4 of 5', '22 h 10', '1 (12 min)', '', '+1 task', 'up'], ['Ali', 'Editor', 67, '4 of 6', '4 of 5', '17 h 40', '0', '', '−1 task', 'down'], ['Huda', 'Writer', 100, '2 of 2', '5 of 5', '20 h 05', '2 (25 min)', '', 'same', ''], ['Zayn', 'Title finder', 85, '17 of 20', '3 of 5', '14 h 20', '1 (8 min)', '17 titles', '−3 titles', 'down']];
+  const cols = [['goal', 'Goal achieved'], ['delivered', 'Tasks delivered'], ['days', 'Days present'], ['time', 'Recorded time'], ['late', 'Late arrivals'], ['titles', 'Titles created']].filter(([k]) => L[k]);
+  const cell = (r, k) => k === 'goal' ? `<div class="row"><span style="min-width:2.6em">${r[2]}%</span><div class="bar" style="width:70px"><i style="width:${r[2]}%"></i></div></div>` : k === 'delivered' ? r[3] : k === 'days' ? r[4] : k === 'time' ? r[5] : k === 'late' ? r[6] : (r[7] || '–');
+  const showCmp = isOwner && L.compare;
+  return `<div class="row between" style="margin-bottom:10px"><div class="tabs" style="margin:0"><button class="btn on">This week</button><button class="btn">This month</button></div>${isOwner ? '<button class="btn small" data-act="custom">Customise reports</button>' : ''}</div>
+  <section class="card"><div class="row between"><h2 style="margin:0">Team results</h2>${isOwner ? `<span class="chip owner">Owner view${L.compare ? ' · compared with ' + L.against : ''}</span>` : '<span class="muted small">Set up by the Owner</span>'}</div>
+  <div class="tablewrap" style="overflow-x:auto"><table style="margin-top:8px"><thead><tr><th>Person</th>${cols.map(([, l]) => `<th>${l}</th>`).join('')}${showCmp ? `<th>vs ${L.against}</th>` : ''}</tr></thead><tbody>
+  ${rows.map((r) => `<tr><td><strong>${r[0]}</strong><div class="muted small">${r[1]}</div></td>${cols.map(([k]) => `<td>${cell(r, k)}</td>`).join('')}${showCmp ? `<td class="${r[9]}">${r[8]}</td>` : ''}</tr>`).join('')}</tbody></table></div>
+  <p class="muted small">Goal = target set by the Owner for each job (${Object.entries(goals).map(([j, g]) => j + ' ' + g + '/week').join(', ')}). Not a ranking: shifts and task size differ.</p></section>`;
+}
+function customDlg() {
+  const box = (k, l) => `<label class="ck" style="display:flex;gap:8px;align-items:center;margin:6px 0"><input type="checkbox" data-k="${k}" ${layout[k] ? 'checked' : ''} style="width:20px;min-height:0"> ${l}</label>`;
+  open(`<h2>Customise reports</h2>
+    <strong>Columns everyone with report access sees</strong>
+    ${box('goal', 'Goal achieved %')}${box('delivered', 'Tasks delivered')}${box('days', 'Days present')}${box('time', 'Recorded task time')}${box('late', 'Late arrivals')}${box('titles', 'Titles created (title finders)')}
+    <div class="sub" style="margin-top:12px"><strong>Comparison (Owner only)</strong>
+      ${box('compare', 'Show comparison with an earlier period')}
+      <label class="f"><span>Compare with</span><select id="against"><option ${layout.against === 'last week' ? 'selected' : ''}>last week</option><option ${layout.against === 'last month' ? 'selected' : ''}>last month</option><option ${layout.against === 'same week last month' ? 'selected' : ''}>same week last month</option></select></label></div>
+    <div class="sub"><strong>Weekly goal per job (tasks delivered)</strong>
+      <div class="row" style="margin-top:6px">${Object.entries(goals).map(([j, g]) => `<label class="f" style="margin:0;flex:1;min-width:110px"><span class="small">${j}</span><input type="number" min="1" value="${g}" data-g="${j}"></label>`).join('')}</div></div>
+    <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="x">Cancel</button><button class="btn primary" id="ok">Save</button></div>`);
+  $('#x').onclick = close;
+  $('#ok').onclick = () => { dlg.querySelectorAll('[data-k]').forEach((c) => (layout[c.dataset.k] = c.checked)); layout.against = $('#against').value; dlg.querySelectorAll('[data-g]').forEach((i) => (goals[i.dataset.g] = +i.value)); close(); render(); toast('Reports updated ✓'); };
 }
 
 function fixView() {
@@ -230,7 +250,10 @@ function fixView() {
     : corr.ali === 'asked'
       ? `<div class="item"><div class="row between"><div><strong>Ali</strong> · Mon 27 <span class="chip warn">Waiting for Ali</span></div><button class="btn small primary" data-act="setAli">Set time</button></div></div>`
       : `<div class="item"><strong>Ali</strong> · Mon 27 <span class="chip ok">Fixed: clock-out 19:45</span></div>`;
-  return `<section class="card"><h2>Corrections</h2>${sara}${ali}</section>`;
+  const omar = role === 'admin' ? (corr.omar === 'pending'
+    ? `<div class="item"><div class="row between"><div><strong>Omar</strong> (manager) asks to change Mon 27 <span class="chip warn">Waiting</span><div class="small muted">Clock-out 19:15 → 20:00 · “Left at 20:00.”</div></div><span class="row"><button class="btn small" data-act="declineOmar">Decline</button><button class="btn small go" data-act="approveOmar">Approve</button></span></div></div>`
+    : `<div class="item"><strong>Omar</strong> · Mon 27 <span class="chip ok">${corr.omar === 'approved' ? 'Approved' : 'Declined'}</span></div>`) : '';
+  return `<section class="card"><h2>Corrections</h2>${role === 'manager' ? '<p class="muted small">Your own records are changed by the Owner only.</p>' : ''}${omar}${sara}${ali}</section>`;
 }
 function reviewSaraDlg() {
   open(`<h2>Sara · Tue 28</h2>
@@ -270,8 +293,12 @@ function wire() {
     const a = b.dataset.act;
     if (a === 'reviewSara') reviewSaraDlg();
     else if (a === 'declineSara') { corr.sara = 'declined'; render(); toast('Declined, Sara is told'); }
+    else if (a === 'approveOmar') { corr.omar = 'approved'; render(); toast('Applied. Saved in the audit history'); }
+    else if (a === 'declineOmar') { corr.omar = 'declined'; render(); toast('Declined, Omar is told'); }
     else if (a === 'askAli') { corr.ali = 'asked'; render(); toast('Asked Ali to confirm'); }
     else if (a === 'setAli') setAliDlg();
+    else if (a === 'custom') customDlg();
+    else if (a === 'switch') toast('Timing V3 now. Not changed in ClickUp');
     else if (a === 'note') noteDlg('Add a note', 'Save note');
     else if (a === 'changes') noteDlg('Request changes', 'Send request');
   }));
