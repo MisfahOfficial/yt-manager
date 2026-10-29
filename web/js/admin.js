@@ -193,16 +193,18 @@ export async function settingsPage(root, me) {
   const auto = h('input', { type: 'checkbox', checked: s.settings.auto_reports });
   auto.addEventListener('change', () => save({ auto_reports: auto.checked }));
   const rep = h('section', { class: 'card' }, h('h2', {}, 'Reports'), h('label', { class: 'check' }, auto, ' Prepare the weekly and monthly reports automatically when a period ends'), h('p', { class: 'muted' }, 'Reports are shown in the app only. No daily report is made and nothing is emailed.'));
-  const out = h('section', { class: 'card' }, h('h2', {}, 'Imported old records'), h('p', { class: 'muted' }, 'Paste the old app\'s exported data (JSON) to keep its history. Old passwords are never imported.'), importBox());
+  const out = h('section', { class: 'card' }, h('h2', {}, 'Imported old records'), h('p', { class: 'muted' }, 'Paste the old app\'s exported data (JSON) to keep its history. Old passwords are never imported.'), h('p', {}, h('a', { href: '#legacy' }, 'Browse old records')), importBox());
   const sm = await statusCard(s.settings);
   const sck = scriptCheckCard(s.settings.script_checks, reload);
+  const chCard = await channelsCard();
+  const catCard = await categoriesCard();
   const ctj = h('input', { type: 'text', value: (s.settings.created_tracking_jobs || []).join(', '), placeholder: 'e.g. Title finder' });
   const createdCard = h('section', { class: 'card' }, h('h2', {}, 'Jobs that create tasks (titles, ideas)'),
     h('p', { class: 'muted' }, 'For jobs that add each title or idea as a new ClickUp task instead of moving tasks through statuses. The app counts the tasks they create, per channel code (the start of the task name, like V4--), per day, week and month. It flags names without a code and titles that may repeat. Titles are not scored.'),
     field('Jobs counted this way', ctj, 'Comma separated, same names as the Job field under People.'),
     (() => { const b = h('button', { class: 'btn primary', type: 'button' }, 'Save'); b.addEventListener('click', busy(b, async () => { try { await post('/api/admin/settings', { created_tracking_jobs: ctj.value.split(',').map((x) => x.trim()).filter(Boolean) }); announce('Saved ✓ Press Sync now to load recent tasks.'); } catch (e) { announce(e.message, 'err'); } })); return b; })());
   const aud = h('section', { class: 'card' }, h('h2', {}, 'Audit history'), h('p', { class: 'muted' }, 'Every correction, approval and setting change.'), h('a', { class: 'btn', href: '#audit' }, 'Open audit history'));
-  const secs = [[net, 'Office network'], [outage, 'Outage'], [cuCard, 'ClickUp'], [sm, 'Statuses'], [sck, 'Script checks'], [createdCard, 'Titles'], [shiftCard, 'Shifts'], [rep, 'Reports'], [aud, 'Audit']];
+  const secs = [[net, 'Office network'], [outage, 'Outage'], [cuCard, 'ClickUp'], [sm, 'Statuses'], [chCard, 'Channels'], [catCard, 'Work categories'], [sck, 'Script checks'], [createdCard, 'Titles'], [shiftCard, 'Shifts'], [rep, 'Reports'], [aud, 'Audit']];
   secs.forEach(([el, l], i) => { el.id = 'sec' + i; });
   const jump = h('nav', { class: 'jump', 'aria-label': 'Settings sections' }, secs.map(([, l], i) => h('a', { href: '#settings', onclick: (ev) => { ev.preventDefault(); document.getElementById('sec' + i)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } }, l)));
   root.replaceChildren(jump, ...secs.map(([el]) => el), out);
@@ -315,4 +317,67 @@ function scriptCheckCard(cfg, reload) {
   };
   render();
   return card;
+}
+
+// ---------------------------------------------------------------- CHANNELS (recognised from the start of a ClickUp task name)
+async function channelsCard() {
+  const card = h('section', { class: 'card' }, h('h2', {}, 'Channels'),
+    h('p', { class: 'muted' }, 'The channel is read from the start of a ClickUp task name, like V4-… or {C1-…} (braces = thumbnails made by automation). Used by the Calendar, title counts and reports.'));
+  let r; try { r = await get('/api/channels'); } catch (e) { card.append(errBox(e)); return card; }
+  const rows = r.channels.map((c) => ({ ...c }));
+  const body = h('div', { class: 'stack' });
+  const draw = () => {
+    body.replaceChildren(h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Code', 'Name', 'Colour', 'Tasks', 'On', ''].map((x) => h('th', {}, x)))), h('tbody', {}, rows.map((c, i) => {
+      const code = h('input', { type: 'text', value: c.code, maxlength: 12, 'aria-label': 'Code' }); code.addEventListener('input', () => { c.code = code.value.toUpperCase(); });
+      const name = h('input', { type: 'text', value: c.name, maxlength: 60, 'aria-label': 'Name' }); name.addEventListener('input', () => { c.name = name.value; });
+      const col = h('input', { type: 'color', value: c.color || '#6c93ff', 'aria-label': 'Colour' }); col.addEventListener('input', () => { c.color = col.value; });
+      const on = h('input', { type: 'checkbox', checked: !!c.active, 'aria-label': 'Active' }); on.addEventListener('change', () => { c.active = on.checked ? 1 : 0; });
+      const del = h('button', { class: 'btn small', type: 'button', onclick: () => { rows.splice(i, 1); draw(); } }, 'Remove');
+      return h('tr', {}, h('td', {}, code), h('td', {}, name), h('td', {}, col), h('td', {}, String(c.tasks ?? '')), h('td', {}, on), h('td', {}, del));
+    })))));
+    if (r.suggestions?.length) body.append(h('div', { class: 'row' }, h('span', { class: 'muted small' }, 'Found in ClickUp but not listed:'), ...r.suggestions.map((s0) => { const b = h('button', { class: 'btn small', type: 'button' }, `+ ${s0.code} (${s0.tasks})`); b.addEventListener('click', () => { rows.push({ code: s0.code, name: s0.code, color: '#6c93ff', active: 1, tasks: s0.tasks }); r.suggestions = r.suggestions.filter((x) => x.code !== s0.code); draw(); }); return b; })));
+    const add = h('button', { class: 'btn', type: 'button', onclick: () => { rows.push({ code: '', name: '', color: '#6c93ff', active: 1 }); draw(); } }, 'Add a channel');
+    const save = h('button', { class: 'btn primary', type: 'button' }, 'Save channels');
+    save.addEventListener('click', busy(save, async () => { try { await post('/api/admin/channels', { channels: rows.map((c) => ({ code: c.code, name: c.name || c.code, color: c.color, active: !!c.active })) }); announce('Saved ✓'); } catch (e) { announce(e.message, 'err'); } }));
+    body.append(h('div', { class: 'row' }, add, save));
+  };
+  draw(); card.append(body);
+  return card;
+}
+
+// ---------------------------------------------------------------- WORK CATEGORIES (for "by work type" in reports)
+async function categoriesCard() {
+  const card = h('section', { class: 'card' }, h('h2', {}, 'Work categories'),
+    h('p', { class: 'muted' }, 'Reports group finished work and time by category. A category belongs to a job, so a person\'s work goes under their job\'s category. Thumbnails made by automation are shown separately.'));
+  let r; try { r = await get('/api/admin/categories'); } catch (e) { card.append(errBox(e)); return card; }
+  const rows = r.categories.map((c) => ({ name: c.name, job_role: c.job_role || '', active: !!c.active }));
+  const body = h('div', { class: 'stack' });
+  const draw = () => {
+    body.replaceChildren(...rows.map((c, i) => {
+      const name = h('input', { type: 'text', value: c.name, maxlength: 60, placeholder: 'Category, e.g. Video editing' }); name.addEventListener('input', () => { c.name = name.value; });
+      const job = h('input', { type: 'text', value: c.job_role, maxlength: 40, list: 'jobroles3', placeholder: 'Job' }); job.addEventListener('input', () => { c.job_role = job.value; });
+      return h('div', { class: 'row' }, h('div', { class: 'grow' }, name), h('div', { class: 'grow' }, job), h('button', { class: 'btn small', type: 'button', onclick: () => { rows.splice(i, 1); draw(); } }, 'Remove'));
+    }), h('datalist', { id: 'jobroles3' }, ['Editor', 'Writer', 'Designer', 'Title finder', 'Voice-over', 'Uploader'].map((x) => h('option', { value: x }))));
+    const save = h('button', { class: 'btn primary', type: 'button' }, 'Save categories');
+    save.addEventListener('click', busy(save, async () => { try { await post('/api/admin/categories', { categories: rows.filter((c) => c.name.trim()).map((c) => ({ name: c.name, job_role: c.job_role || null, active: true })) }); announce('Saved ✓'); } catch (e) { announce(e.message, 'err'); } }));
+    body.append(h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: () => { rows.push({ name: '', job_role: '', active: true }); draw(); } }, 'Add a category'), save));
+  };
+  draw(); card.append(body);
+  return card;
+}
+
+// ---------------------------------------------------------------- OLD RECORDS (read-only archive of the original app's data)
+export async function legacyPage(root) {
+  const kinds = [['member', 'People'], ['attendance', 'Attendance'], ['workLog', 'Work logs'], ['task', 'Tasks'], ['video', 'Videos']];
+  const kind = legacyPage.kind || 'attendance';
+  root.replaceChildren(h('p', { class: 'muted' }, 'Loading…'));
+  let r; try { r = await get('/api/admin/legacy?kind=' + kind); } catch (e) { root.replaceChildren(errBox(e)); return; }
+  const tabs = h('div', { class: 'tabs' }, kinds.map(([k, l]) => { const b = h('button', { class: 'btn' + (k === kind ? ' on' : ''), type: 'button' }, l); b.addEventListener('click', () => { legacyPage.kind = k; legacyPage(root); }); return b; }));
+  const card = h('section', { class: 'card' }, h('p', {}, h('a', { href: '#settings' }, '‹ Settings')), h('h2', {}, 'Old records'), h('p', { class: 'muted' }, 'Read-only archive from the original app. Not used in reports. Old passwords are never kept.'));
+  if (!r.records.length) card.append(empty('Nothing imported for this tab. Import the old app\'s data in Settings → Imported old records.'));
+  else {
+    const cols = [...new Set(r.records.flatMap((x) => Object.keys(x)))].filter((c) => !['employee_id', 'password', 'sheetPassword', 'color'].includes(c)).slice(0, 8);
+    card.append(h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, cols.map((c) => h('th', {}, c)))), h('tbody', {}, r.records.slice(0, 300).map((x) => h('tr', {}, cols.map((c) => h('td', {}, String(x[c] ?? '').slice(0, 80)))))))), h('p', { class: 'muted small' }, `Showing ${Math.min(300, r.records.length)} of ${r.records.length}.`));
+  }
+  root.replaceChildren(tabs, card);
 }

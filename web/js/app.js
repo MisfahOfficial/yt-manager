@@ -1,16 +1,16 @@
 import { h, $, get, post, field, busy, announce, errBox, setAuthLostHandler, setCurrentUser } from './core.js';
 import { todayPage, historyPage } from './staff.js';
-import { teamPage, taskPage, reportsPage, fixesPage } from './manager.js';
-import { peoplePage, settingsPage, auditPage } from './admin.js';
+import { teamPage, taskPage, calendarPage, reportsPage, fixesPage } from './manager.js';
+import { peoplePage, settingsPage, auditPage, legacyPage } from './admin.js';
 
 const main = $('#main');
 let me = null;
 
 // Everyone who works (employees, and managers/the Owner when they have tasks) gets the same two work tabs first.
 const OWN = [['today', 'Today', todayPage], ['history', 'My History & Reports', historyPage]];
-const MGR = [['team', 'Team', teamPage], ['reports', 'Reports', reportsPage], ['fixes', 'Corrections', fixesPage]];
+const MGR = [['team', 'Team', teamPage], ['calendar', 'Calendar', calendarPage], ['reports', 'Reports', reportsPage], ['fixes', 'Corrections', fixesPage]];
 const ADM = [['people', 'People', peoplePage], ['settings', 'Settings', settingsPage]];
-const HIDDEN = [['audit', 'Audit history', auditPage]]; // reached from Settings
+const HIDDEN = [['audit', 'Audit history', auditPage], ['legacy', 'Old records', legacyPage]]; // reached from Settings
 
 const pagesFor = (m) => (m.role === 'employee' ? { groups: [OWN] } : m.role === 'manager' ? { groups: [OWN, MGR] } : { groups: [OWN, [...MGR, ...ADM]] });
 

@@ -128,6 +128,8 @@ export async function reportsPage(root, me) {
   body.push(top);
   const need = r.employees.flatMap((e) => e.attention.map((a) => `${e.employee.name}: ${a}`));
   body.push(h('section', { class: 'card' }, h('h2', {}, 'Needs your attention'), need.length ? h('ul', {}, need.map((n) => h('li', {}, n))) : empty('Nothing flagged.')));
+  const brk = (title, data, hdr) => Object.keys(data || {}).length ? h('details', { class: 'card' }, h('summary', {}, title), h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, hdr.map((x) => h('th', {}, x)))), h('tbody', {}, Object.entries(data).map(([k, v]) => h('tr', {}, h('td', {}, k), ...(v.ms != null ? [h('td', {}, String(v.delivered)), h('td', {}, fmtDur(v.ms))] : [h('td', {}, String(v.delivered)), h('td', {}, `${v.on_time} / ${v.overdue}`)]))))))) : null;
+  body.push(brk('By work type', r.by_work_type, ['Work type', 'Finished', 'Time on tasks']), brk('By channel', r.by_channel, ['Channel', 'Finished', 'On time / late']));
   for (const e of r.employees) body.push(employeeBlock(e, r.kind));
   if (r.kind === 'monthly') {
     if (r.by_role) body.push(h('section', { class: 'card' }, h('h2', {}, 'By job'), h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Job', 'People', 'Finished', 'On time / late', 'Original time', 'Revision time'].map((x) => h('th', {}, x)))), h('tbody', {}, Object.entries(r.by_role).map(([k, v]) => h('tr', {}, h('td', {}, k), h('td', {}, String(v.people)), h('td', {}, String(v.delivered)), h('td', {}, `${v.on_time} / ${v.overdue}`), h('td', {}, fmtDur(v.original_ms)), h('td', {}, fmtDur(v.revision_ms)))))))));
@@ -247,4 +249,30 @@ function correctDialog(a, done) {
     b.addEventListener('click', busy(b, async () => { try { await post(`/api/attendance/${a.id}/correct`, { check_in_at: fromInput(i.value), check_out_at: o.value ? fromInput(o.value) : null, reason: why.value }); announce('Saved ✓'); close(); done(); } catch (e) { announce(e.message, 'err'); } }));
     return [h('button', { class: 'btn', type: 'button', onclick: close }, 'Cancel'), b];
   });
+}
+
+// ---------------------------------------------------------------- CONTENT CALENDAR (read-only, straight from ClickUp)
+const CAL_CLASS = { Planned: '', 'In Production': 'warn', Ready: 'ok', Uploaded: 'ok', Missed: 'bad' };
+export async function calendarPage(root, me) {
+  const st = calendarPage.st ||= { week: null };
+  root.replaceChildren(h('p', { class: 'muted' }, 'Loading…'));
+  let r; try { r = await get('/api/calendar' + (st.week ? '?week=' + st.week : '')); } catch (e) { root.replaceChildren(errBox(e)); return; }
+  st.week = r.week_start;
+  const addD = (s0, n) => new Date(Date.parse(s0 + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
+  const go = (n) => { st.week = addD(r.week_start, 7 * n); calendarPage(root, me); };
+  const dayLabel = (d) => { const x = new Date(d + 'T00:00:00Z'); return `${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][x.getUTCDay()]} ${x.getUTCDate()}`; };
+  const bar = h('section', { class: 'card slim row between' }, h('div', { class: 'row' }, h('button', { class: 'btn small', type: 'button', 'aria-label': 'Previous week', onclick: () => go(-1) }, '‹'), h('strong', {}, `Week of ${r.week_start}`),
+    h('button', { class: 'btn small', type: 'button', 'aria-label': 'Next week', onclick: () => go(1) }, '›'), h('button', { class: 'btn small', type: 'button', onclick: () => { st.week = null; calendarPage(root, me); } }, 'This week')),
+    h('div', { class: 'row small' }, Object.entries(r.counts).map(([k, n]) => chip(`${k} ${n}`, CAL_CLASS[k]))));
+  const out = [bar];
+  const item = (i) => { const a = h('a', { class: 'cal-item', href: '#task/' + encodeURIComponent(i.id), title: i.name }, h('span', { class: 'cal-name' }, short(i.name.replace(/^\s*\{?\s*[A-Za-z]+\d*\s*[-–—_:.]*\s*/, '').replace(/\}$/, ''), 46)), h('span', { class: 'row small' }, chip(i.cal, CAL_CLASS[i.cal]), i.automation ? chip('Thumbnail') : null, i.assignees.length ? h('span', { class: 'muted' }, i.assignees.join(', ')) : null)); return a; };
+  if (!r.channels.length) out.push(h('section', { class: 'card' }, empty('No videos with an upload day this week.')));
+  else {
+    const table = h('table', { class: 'cal' }, h('thead', {}, h('tr', {}, [h('th', {}, 'Channel'), ...r.days.map((d) => h('th', { class: d === r.today ? 'today' : '' }, dayLabel(d)))])),
+      h('tbody', {}, r.channels.map((c) => { const dot = h('span', { class: 'dot' }); dot.style.background = c.color; return h('tr', {}, h('th', { class: 'chan' }, dot, ' ', c.name), ...r.days.map((d) => h('td', { class: d === r.today ? 'today' : '' }, c.items.filter((i) => i.day === d).map(item)))); })));
+    out.push(h('section', { class: 'card' }, h('div', { class: 'tablewrap' }, table)));
+  }
+  if (r.unscheduled.length) out.push(h('details', { class: 'card' }, h('summary', {}, `No upload day set (${r.unscheduled.length})`), ...r.unscheduled.map((i) => h('div', { class: 'item row between' }, item(i)))));
+  out.push(h('p', { class: 'muted small' }, 'Taken from ClickUp (name, upload day = due date, status). To change a video, change it in ClickUp. Missed = past its day and not uploaded.'));
+  root.replaceChildren(...out);
 }
