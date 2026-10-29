@@ -10,6 +10,7 @@ const SEC = {
   'content-type': 'application/json; charset=utf-8',
   'cache-control': 'no-store',
   'x-content-type-options': 'nosniff',
+  'strict-transport-security': 'max-age=31536000; includeSubDomains',
 };
 export const json = (data, status = 200, headers = {}) => new Response(JSON.stringify(data), { status, headers: { ...SEC, ...headers } });
 

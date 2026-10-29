@@ -14,6 +14,7 @@ export default defineConfig(async () => {
             BOOTSTRAP_TOKEN: 'test-bootstrap-token',
             ENCRYPTION_KEY: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
             PBKDF2_ITER: '1000',
+            LOGIN_PER_MIN: '100000', USER_PER_10S: '100000',
             SESSION_HOURS: '5000', // tests jump the clock by days
           },
         },

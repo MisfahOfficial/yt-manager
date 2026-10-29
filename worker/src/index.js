@@ -3,6 +3,7 @@ import * as auth from './auth.js';
 import * as att from './attendance.js';
 import * as work from './work.js';
 import * as cl from './clickup.js';
+import { AuthRevoked, RateLimited } from './clickup.js';
 import * as rep from './reports.js';
 import * as adm from './admin.js';
 import { sweepMissingCheckouts } from './engine.js';
@@ -86,9 +87,11 @@ const ROUTES = [
   ['POST', '/api/admin/import-legacy', adm.importLegacy, [A]],
   ['GET', '/api/admin/legacy', adm.legacyList, [A]],
 ].map(([method, path, handler, who, opts]) => ({
-  method, handler, who, opts: opts || {},
+  method, path, handler, who, opts: opts || {},
   re: new RegExp('^' + path.replace(/:[a-z]+/g, '([^/]+)') + '$'), names: [...path.matchAll(/:([a-z]+)/g)].map((m) => m[1]),
 }));
+
+export const ROUTE_TABLE = ROUTES;
 
 function match(method, pathname) {
   for (const r of ROUTES) {
@@ -100,6 +103,15 @@ function match(method, pathname) {
 }
 const pathExists = (pathname) => ROUTES.some((r) => r.re.test(pathname));
 
+// Best-effort flood guard (per Worker instance, free): at most N requests per window per key.
+const HITS = new Map();
+function throttled(key, max, windowMs, now) {
+  const arr = (HITS.get(key) || []).filter((t) => now - t < windowMs);
+  arr.push(now); HITS.set(key, arr);
+  if (HITS.size > 5000) for (const k of HITS.keys()) { if (!HITS.get(k).some((t) => now - t < windowMs)) HITS.delete(k); }
+  return arr.length > max;
+}
+
 export async function handle(request, env, execCtx) {
   const url = new URL(request.url);
   const now = Date.now();
@@ -110,6 +122,8 @@ export async function handle(request, env, execCtx) {
       throw new HttpError(404, 'not_found', 'Not found.');
     }
     const { r, params } = m;
+    const ip = request.headers.get('cf-connecting-ip') || 'x';
+    if (url.pathname === '/api/login' && throttled('login:' + ip, +env.LOGIN_PER_MIN || 20, 60000, now)) throw new HttpError(429, 'slow_down', 'Too many attempts. Wait a minute and try again.');
     const ctx = { env, req: request, url, now, params, emp: null, body: {}, rawBody: '', waitUntil: (p) => execCtx?.waitUntil(p) };
     const mutating = request.method !== 'GET' && request.method !== 'HEAD';
     if (mutating && !r.opts.raw) {
@@ -126,6 +140,7 @@ export async function handle(request, env, execCtx) {
     if (r.who !== 'public') {
       ctx.emp = await auth.loadSession(ctx);
       if (!ctx.emp) throw new HttpError(401, 'not_logged_in', 'Please sign in.');
+      if (throttled('u:' + ctx.emp.id, +env.USER_PER_10S || 90, 10000, now)) throw new HttpError(429, 'slow_down', 'Too many requests. Wait a few seconds.');
       if (!r.who.includes(ctx.emp.role)) throw forbidden();
       const allowedWhileTemp = ['/api/password', '/api/logout', '/api/me'];
       if (ctx.emp.must_change_pw && !allowedWhileTemp.includes(url.pathname)) throw new HttpError(403, 'must_change_password', 'Please choose a new password first.');
@@ -133,6 +148,9 @@ export async function handle(request, env, execCtx) {
     const res = await r.handler(ctx);
     return res;
   } catch (e) {
+    if (e instanceof AuthRevoked) return json({ error: { code: 'clickup_auth_revoked', message: 'ClickUp access was revoked. Reconnect ClickUp in Settings.' } }, 409);
+    if (e instanceof RateLimited) return json({ error: { code: 'clickup_rate_limited', message: 'ClickUp is busy. Try again in a minute.' } }, 429);
+    if (e && e.status && /^clickup_\d+$/.test(e.message)) return json({ error: { code: 'clickup_error', message: `ClickUp refused the request (${e.status}).` } }, 502);
     if (e instanceof HttpError) return json({ error: { code: e.code, message: e.message, ...(e.extra ? { details: e.extra } : {}) } }, e.status);
     console.error('unhandled', e && e.stack || e);
     return json({ error: { code: 'server_error', message: 'Something went wrong on our side. Nothing was saved. Please try again.' } }, 500);

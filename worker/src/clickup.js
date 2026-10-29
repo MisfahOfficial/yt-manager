@@ -27,7 +27,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export async function cu(env, path, { method = 'GET', body, retries = 2 } = {}) {
   const token = await getToken(env);
-  if (!token) throw new Error('clickup_not_connected');
+  if (!token) throw new HttpError(409, 'clickup_not_connected', 'ClickUp is not connected yet. Connect it in Settings first.');
   for (let i = 0; ; i++) {
     const res = await (env.CLICKUP_FETCH || fetch)(API + path, {
       method, headers: { Authorization: token.startsWith('pk_') ? token : `Bearer ${token}`, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined,
@@ -67,7 +67,7 @@ export async function processWebhook(env, p, now) {
   const taskId = p.task_id ? String(p.task_id) : null;
   if (!taskId || !WANTED_EVENTS.includes(p.event)) return { inserted: 0, taskId, changed: false };
   const wid = p.webhook_id || 'wh';
-  const items = Array.isArray(p.history_items) ? p.history_items : [];
+  const items = Array.isArray(p.history_items) ? p.history_items.filter((x) => x && typeof x === 'object') : [];
   const evs = [];
   if (p.event === 'taskDeleted') evs.push({ key: `${wid}:deleted:${taskId}`, kind: 'deleted', at: Number(items[0]?.date) || now, to: 'deleted' });
   for (const h of items) {

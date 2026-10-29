@@ -59,6 +59,10 @@ export async function rebuildEmployee(env, employeeId, sinceMs, now = Date.now()
   }
   const choices = (await db.prepare('SELECT task_id,at_ms FROM active_choices WHERE employee_id=? AND at_ms>=?').bind(employeeId, since).all()).results;
   const out = computeSessions({ attendance, windows, tasks, choices, now });
+  const existing = (await db.prepare('SELECT task_id,kind,start_ms,end_ms,end_reason FROM task_sessions WHERE employee_id=? AND (end_ms IS NULL OR end_ms>?) ORDER BY start_ms,task_id').bind(employeeId, since).all()).results;
+  const same = (a, b) => a.length === b.length && a.every((x, i) => x.task_id === b[i].task_id && x.kind === b[i].kind && x.start_ms === b[i].start && (x.end_ms ?? null) === (b[i].end ?? null) && (x.end_reason ?? null) === (b[i].reason ?? null));
+  const fresh = out.sessions.slice().sort((a, b) => a.start - b.start || String(a.task_id).localeCompare(String(b.task_id)));
+  if (same(existing, fresh)) return out; // nothing changed: write nothing
   const stmts = [
     db.prepare('DELETE FROM task_sessions WHERE employee_id=? AND (end_ms IS NULL OR end_ms>?)').bind(employeeId, since),
     ...out.sessions.map((s) => db.prepare('INSERT INTO task_sessions(employee_id,task_id,kind,start_ms,end_ms,end_reason) VALUES (?,?,?,?,?,?)')

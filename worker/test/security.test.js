@@ -28,8 +28,12 @@ describe('authentication', () => {
     const bad = await c.post('/api/login', { email: 'alice@x.test', password: 'nope-nope-nope' });
     expect(bad.status).toBe(401);
     expect(bad.data.error.message).toMatch(/^Email or password is wrong/);
-    for (let i = 0; i < 5; i++) await c.post('/api/login', { email: 'zed@x.test', password: 'x' + i });
-    expect((await c.post('/api/login', { email: 'zed@x.test', password: 'x' })).status).toBe(429);
+    await admin.post('/api/admin/employees', { name: 'Lockme', email: 'lockme@x.test' });
+    for (let i = 0; i < 5; i++) await c.post('/api/login', { email: 'lockme@x.test', password: 'x' + i });
+    expect((await c.post('/api/login', { email: 'lockme@x.test', password: 'x' })).status).toBe(429);
+    // made-up emails are never locked and never written (cannot be used to burn the free write quota)
+    for (let i = 0; i < 7; i++) expect((await c.post('/api/login', { email: 'nobody@x.test', password: 'x' + i })).status).toBe(401);
+    expect((await env.DB.prepare("SELECT COUNT(*) n FROM login_attempts WHERE email='nobody@x.test'").first()).n).toBe(0);
   });
   it('passwords are stored only as salted hashes', async () => {
     const row = await env.DB.prepare('SELECT pw_hash,pw_salt FROM employees WHERE email=?').bind('alice@x.test').first();
