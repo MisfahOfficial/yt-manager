@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YT Manager: design prototype (fictional data)</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#14171c;--muted:#5a6270;--line:#d9dde3;--brand:#1f5eff;--brand-ink:#fff;--ok:#0a7a3b;--okbg:#e2f5ea;--warn:#8a5a00;--warnbg:#fff1d6;--bad:#a4161a;--badbg:#fde4e4}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1216;--card:#181c22;--ink:#eef0f3;--muted:#a3abb8;--line:#2c323b;--brand:#6c93ff;--brand-ink:#0b0d11;--ok:#6fdc9a;--okbg:#12301f;--warn:#f1c668;--warnbg:#33290f;--bad:#ff8c8f;--badbg:#3a1618}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+[hidden]{display:none!important}
+.banner{background:var(--warnbg);color:var(--warn);padding:8px 16px;font-size:.9rem;text-align:center}
+.proto{display:flex;flex-wrap:wrap;gap:6px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--card);align-items:center}
+.proto b{margin-right:6px;font-size:.85rem;color:var(--muted)}
+.pill{font:inherit;font-size:.85rem;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:999px;padding:5px 12px;cursor:pointer}
+.pill.on{background:var(--ink);color:var(--bg)}
+.top{display:flex;gap:12px;align-items:center;background:var(--card);border-bottom:1px solid var(--line);padding:8px 16px}
+.brand{font-weight:700}.top nav{display:flex;gap:4px;flex:1;flex-wrap:wrap}
+.top a{padding:8px 12px;border-radius:8px;text-decoration:none;color:var(--ink);cursor:pointer}
+.top a.on{background:var(--brand);color:var(--brand-ink)}
+.me{color:var(--muted);font-size:.9rem}
+main{max-width:760px;margin:0 auto;padding:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin:0 0 14px}
+.hero{text-align:center;padding:26px 16px}
+.date{color:var(--muted)}.state{font-size:1.8rem;font-weight:700;margin:.2em 0}
+.btn{font:inherit;font-weight:600;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 16px;min-height:44px;cursor:pointer}
+.btn.primary{background:var(--brand);color:var(--brand-ink);border-color:var(--brand)}
+.btn.xl{font-size:1.3rem;padding:16px 40px;min-width:260px;margin-top:10px}
+.btn.small{padding:6px 10px;min-height:34px;font-size:.9rem}
+.chip{display:inline-block;padding:2px 10px;border-radius:999px;background:var(--line);font-size:.8rem;font-weight:600}
+.chip.ok{background:var(--okbg);color:var(--ok)}.chip.warn{background:var(--warnbg);color:var(--warn)}.chip.bad{background:var(--badbg);color:var(--bad)}
+.muted{color:var(--muted)}.small{font-size:.875rem}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.between{justify-content:space-between}
+.task h3{margin:0 0 2px;font-size:1.1rem}
+.err{background:var(--badbg);color:var(--bad);padding:10px 12px;border-radius:8px;font-weight:600;margin-top:12px}
+details>summary{cursor:pointer;padding:6px 0}
+.item{padding:10px 0;border-top:1px solid var(--line)}.item:first-child{border-top:0}
+input,textarea,select{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px 12px;width:100%;min-height:44px}
+label.f{display:block;margin:10px 0 0}label.f span{display:block;font-weight:600;margin-bottom:3px}
+dialog{border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--ink);padding:18px;width:min(580px,calc(100vw - 24px))}
+dialog::backdrop{background:rgba(0,0,0,.5)}
+.ck{display:flex;gap:8px;align-items:center}.ck input{width:20px;min-height:0}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:8px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-size:.85rem}
+.tl{border-left:3px solid var(--line);margin-left:6px;padding-left:14px}.tl .e{margin:0 0 12px}.tl .t{color:var(--muted);font-size:.85rem}
+.note{background:var(--warnbg);color:var(--warn);padding:8px 10px;border-radius:8px;margin-top:6px}
+@media (max-width:560px){.btn.xl{width:100%}.top{flex-wrap:wrap}}
+</style>
+</head>
+<body>
+<div class="banner">Design prototype with fictional people and tasks. Nothing here is saved or connected to any real system.</div>
+
+<div class="proto" aria-label="Prototype controls">
+  <b>VIEW AS</b>
+  <button class="pill on" data-role="employee">Employee (Sara)</button>
+  <button class="pill" data-role="manager">Manager</button>
+  <button class="pill" data-role="admin">Admin</button>
+  <b id="stl" style="margin-left:14px">TODAY STATE</b>
+  <button class="pill on" data-state="before">1 Before check-in</button>
+  <button class="pill" data-state="work">2 Working</button>
+  <button class="pill" data-state="after">4 After check-out</button>
+  <button class="pill" id="openCo">3 Clock-out flow</button>
+</div>
+
+<header class="top">
+  <div class="brand">YT Manager</div>
+  <nav id="nav"></nav>
+  <div class="me" id="me"></div>
+</header>
+
+<main id="main"></main>
+
+<dialog id="coDlg" aria-label="Submit work and clock out">
+  <h2 style="margin-top:0">Submit work &amp; clock out</h2>
+  <p class="muted small">Only what is missing. Task names, deadlines, hours and your name are already known.</p>
+  <div class="item"><div class="row between"><strong>V4 · Intro edit</strong><span class="chip ok">Update saved 16:40 ✓</span></div>
+    <p class="muted small" style="margin:.3em 0">"Intro and 12 sections edited; 8 sections remaining." · <a href="#" onclick="return false">edit</a></p></div>
+  <div class="item"><strong>V3 · Thumbnail set</strong> <span class="chip warn">Needs an update</span>
+    <label class="f"><span>Link to current work</span><input value="https://drive.example.com/f/thumbs-v3-latest"></label>
+    <label class="f"><span>What did you complete?</span><textarea rows="2" placeholder="e.g. Three of five variants done"></textarea></label>
+    <details><summary>Anything pending or blocked?</summary><textarea rows="2" placeholder="Only if relevant"></textarea></details></div>
+  <p><a href="#" onclick="return false">+ Other work (no task)</a></p>
+  <div class="row between" style="margin-top:14px"><details><summary class="small muted">Something is broken and I can't submit</summary><p class="small muted">You will be clocked out now with the real time. Your manager sees the reason.</p></details>
+  <div class="row"><button class="btn" onclick="coDlg.close()">Not yet</button><button class="btn primary" onclick="coDlg.close();setState('after')">Submit &amp; clock out</button></div></div>
+</dialog>
+
+<dialog id="upDlg" aria-label="Update progress">
+  <h2 style="margin-top:0">Update progress · V4 Intro edit</h2>
+  <label class="f"><span>Link to current work</span><input value="https://drive.example.com/f/v4-intro-project"></label>
+  <label class="f"><span>What did you complete?</span><textarea rows="3" placeholder="e.g. Intro and 12 sections edited; 8 remaining"></textarea></label>
+  <details><summary>Anything pending or blocked?</summary><textarea rows="2"></textarea></details>
+  <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" onclick="upDlg.close()">Cancel</button><button class="btn primary" onclick="upDlg.close()">Save update</button></div>
+</dialog>
+
+<script>
+const $ = (s, r = document) => r.querySelector(s);
+const main = $('#main'), nav = $('#nav'), coDlg = $('#coDlg'), upDlg = $('#upDlg');
+let role = 'employee', state = 'before', page = 'today', showErr = false, taskId = null;
+
+const NAV = {
+  employee: [['today', 'Today'], ['history', 'My History & Reports']],
+  manager: [['team', 'Team'], ['reports', 'Reports'], ['fix', 'Corrections']],
+  admin: [['team', 'Team'], ['reports', 'Reports'], ['fix', 'Corrections'], ['people', 'People'], ['settings', 'Settings']],
+};
+
+function setRole(r) { role = r; page = NAV[r][0][0]; taskId = null; $('#stl').hidden = r !== 'employee'; document.querySelectorAll('[data-state],#openCo').forEach((b) => (b.hidden = r !== 'employee')); document.querySelectorAll('[data-role]').forEach((b) => b.classList.toggle('on', b.dataset.role === r)); render(); }
+function setState(s) { state = s; page = 'today'; document.querySelectorAll('[data-state]').forEach((b) => b.classList.toggle('on', b.dataset.state === s)); render(); }
+document.querySelectorAll('[data-role]').forEach((b) => b.addEventListener('click', () => setRole(b.dataset.role)));
+document.querySelectorAll('[data-state]').forEach((b) => b.addEventListener('click', () => setState(b.dataset.state)));
+$('#openCo').addEventListener('click', () => { setState('work'); coDlg.showModal(); });
+
+function render() {
+  nav.innerHTML = NAV[role].map(([id, l]) => `<a class="${id === page ? 'on' : ''}" data-p="${id}" tabindex="0">${l}</a>`).join('');
+  nav.querySelectorAll('a').forEach((a) => a.addEventListener('click', () => { page = a.dataset.p; taskId = null; render(); }));
+  $('#me').textContent = role === 'employee' ? 'Sara · account' : role === 'manager' ? 'Omar (manager) · account' : 'Owner · account';
+  main.innerHTML = ({ employee: employeeView, manager: managerView, admin: managerView })[role]();
+  wire();
+}
+
+function employeeView() {
+  if (page === 'history') return historyView();
+  const date = '<div class="date">Wednesday 29 October · Approved shift: Afternoon 14:00 to 20:00</div>';
+  if (state === 'before') return `<section class="card hero">${date}<div class="state">Not checked in</div>
+    <button class="btn primary xl" id="clockIn">Clock in</button>
+    ${showErr ? `<div class="err" role="alert">You are not on the office Wi-Fi. Connect to the office network and press Clock in again.</div>` : ''}
+    <p class="small muted"><a href="#" id="toggleErr">${showErr ? 'hide' : 'show'} example of a failed check</a></p></section>`;
+  if (state === 'work') return `<section class="card hero">${date}<div class="state">Clocked in since 14:02</div><div class="muted">3 h 10 min on site</div>
+    <button class="btn primary xl" id="clockOut">Clock out</button></section>
+    <section class="card"><div class="row between"><h2 style="margin:0;font-size:1.15rem">My Work</h2><span class="chip">Recorded today 2 h 05 min</span></div>
+      <div class="task" style="margin-top:10px"><h3>V4 · Intro edit</h3>
+        <div class="row"><span class="chip ok">In Progress</span><span class="muted small">Due Fri 31 Oct</span><a class="small" href="#" onclick="return false">Open in ClickUp</a></div>
+        <p class="muted small" style="margin:.4em 0">Resumed automatically from yesterday. Counted only while you are clocked in.</p>
+        <button class="btn small" id="upBtn">Update progress</button></div>
+      <details style="margin-top:8px"><summary>Other assigned tasks (3)</summary>
+        <div class="item row between"><div><strong>V3 · Thumbnail set</strong><div class="muted small">To Do · Due Mon 3 Nov</div></div><button class="btn small">Switch to this</button></div>
+        <div class="item row between"><div><strong>V2 · Title research batch</strong><div class="muted small">Blocked · Due Tue 4 Nov</div></div><span class="chip warn">Blocked</span></div>
+        <div class="item row between"><div><strong>V1 · Outro cleanup</strong><div class="muted small">To Do · No deadline</div></div><button class="btn small">Switch to this</button></div>
+      </details>
+      <div class="note small">If two tasks are In Progress at once, you will be asked which one you are on. Only one is ever timed.</div></section>`;
+  return `<section class="card hero">${date}<div class="state">Clocked out</div><div>14:02 to 20:03 · <strong>6 h 01 min</strong> on site</div>
+    <p><span class="chip ok">Work saved ✓</span> 2 tasks · <a href="#" id="viewSaved">View what I submitted</a></p>
+    <p class="muted small">See you tomorrow. Your task timer resumes by itself at your next check-in.</p></section>`;
+}
+
+function historyView() {
+  return `<section class="card"><div class="row between"><h2 style="margin:0">This week</h2><span><button class="btn small">Week</button> <button class="btn small">Month</button></span></div>
+    <table style="margin-top:8px"><thead><tr><th>Day</th><th>On site</th><th>Recorded task time</th><th>Submitted work</th><th></th></tr></thead><tbody>
+    <tr><td>Wed 29</td><td>6 h 01</td><td>5 h 10</td><td>2 tasks</td><td></td></tr>
+    <tr><td>Tue 28</td><td>5 h 48</td><td>4 h 32</td><td>1 task</td><td><a href="#" onclick="return false">Request correction</a></td></tr>
+    <tr><td>Mon 27</td><td>6 h 05</td><td>5 h 45</td><td>2 tasks</td><td></td></tr></tbody></table>
+    <p class="muted small">Recorded task time is time on a task while clocked in. It is not a measure of effort or quality.</p></section>
+    <section class="card"><h2 style="margin-top:0;font-size:1.1rem">Tasks I worked on</h2>
+    <div class="item"><div class="row between"><strong>V4 · Intro edit</strong><span class="chip">Ready for Upload Tue 28 · 4 h 32 recorded</span></div>
+      <div class="muted small">"Intro and 12 sections edited; 8 remaining." (Tue 16:40) · <a href="#" onclick="return false">project link</a> <span class="chip">Unreviewed</span></div></div>
+    <div class="item"><div class="row between"><strong>V3 · Thumbnail set</strong><span class="chip">In Progress · 1 h 05 recorded</span></div>
+      <div class="muted small">"Three of five variants done." (Mon 19:50) · <a href="#" onclick="return false">project link</a></div></div></section>`;
+}
+
+function managerView() {
+  if (taskId) return taskDetail();
+  if (page === 'reports') return `<section class="card"><div class="row between"><h2 style="margin:0">Reports</h2><span><button class="btn small">Weekly</button> <button class="btn small">Monthly</button></span></div><p class="muted">Present 18 of 20 days · Ready for Upload 14 · On time 12 of 14 · Recorded original 71 h, revision 9 h. (Same content as the current Reports page.)</p></section>`;
+  if (page === 'fix') return `<section class="card"><h2 style="margin-top:0">Corrections</h2><div class="item row between"><div><strong>Sara</strong> asked to correct Tue 28<div class="muted small">"I forgot to clock out at 19:30, left at 20:00."</div></div><span><button class="btn small">Decline</button> <button class="btn small primary">Review</button></span></div><div class="item"><strong>Ali</strong> · Missing check-out on Mon 27 <button class="btn small">Correct</button></div></section>`;
+  if (page === 'people') return `<section class="card"><h2 style="margin-top:0">People</h2><div class="warnbox note">2 computers are waiting for approval · <a href="#" onclick="return false">Review</a></div><p class="muted">Employees, jobs, shifts, ClickUp accounts, computers. (Same as the current People page.)</p></section>`;
+  if (page === 'settings') return `<section class="card"><h2 style="margin-top:0">Settings</h2><p>Office network · ClickUp (connection, statuses, sync) · Shifts · Script &amp; title checks · Reports · Audit history</p><p class="muted small">One page with section links at the top, instead of one long scroll.</p></section>`;
+  return `<section class="card"><div class="row between"><strong>ClickUp tasks: updated 18:31 ✓</strong><button class="btn small">Sync now</button></div></section>
+    ${role === 'admin' ? '<div class="note small" style="margin-bottom:14px">2 computers are waiting for approval · <a href="#" onclick="return false">Review</a></div>' : ''}
+    <section class="card"><h2 style="margin-top:0">Team</h2>
+    <div class="item row between"><div><strong>Sara</strong> <span class="chip ok">Checked in 14:02</span><div class="small">V4 · Intro edit · due Fri 31 Oct</div></div><button class="btn small" data-task="v4">Open</button></div>
+    <div class="item row between"><div><strong>Ali</strong> <span class="chip bad">Missing check-out</span><div class="small muted">No timed task</div></div><button class="btn small" data-task="v3">Open</button></div>
+    <div class="item row between"><div><strong>Huda</strong> <span class="chip ok">Checked in 13:58</span><div class="small">V1 · Script draft · due Thu 30 Oct</div><div class="small" style="color:var(--warn)">No work update yet today</div></div><button class="btn small" data-task="v1">Open</button></div>
+    <div class="item row between"><div><strong>Zayn</strong> <span class="chip warn">Not in yet</span><div class="small">Blocked: V2 Title research <span class="chip warn">Blocked</span></div></div><button class="btn small" data-task="v2">Open</button></div></section>`;
+}
+
+function taskDetail() {
+  return `<p><a href="#" id="back">‹ Back to Team</a></p>
+  <section class="card"><div class="row between"><div><h2 style="margin:0">V4 · Intro edit</h2><div class="muted">Assigned to Sara · <a href="#" onclick="return false">Open in ClickUp</a></div></div><span class="chip ok">In Progress</span></div>
+    <div class="row" style="margin-top:10px"><span><strong>Deadline</strong> Fri 31 Oct 17:00 <span class="muted small">(original: Thu 30 Oct, moved Mon 27 before it fell due)</span></span></div>
+    <div class="muted small" style="margin-top:6px">First Ready for Upload: not yet · Recorded: original 4 h 32 · revision 0</div>
+    <div style="margin-top:10px"><button class="btn small">Request changes</button></div></section>
+  <section class="card"><h2 style="margin-top:0;font-size:1.1rem">Timeline</h2><div class="tl">
+    <div class="e"><div class="t">Today 16:40</div><strong>Sara's update</strong> <span class="chip">Unreviewed</span><div>"Intro and 12 sections edited; 8 sections remaining."</div><div class="small"><a href="#" onclick="return false">Current project</a></div><div class="note small">Pending: colour and music</div></div>
+    <div class="e"><div class="t">Today 14:05</div>Recorded session started (checked in, In Progress)</div>
+    <div class="e"><div class="t">Yesterday 19:58</div>Session paused at clock-out · 2 h 27 recorded that day</div>
+    <div class="e"><div class="t">Yesterday 16:10</div><strong>Sara's update</strong><div>"Rough cut done, starting intro."</div><div class="small"><a href="#" onclick="return false">Project link</a></div></div>
+    <div class="e"><div class="t">Mon 27 11:30</div>Deadline moved Thu 30 → Fri 31 (before it fell due)</div>
+    <div class="e"><div class="t">Mon 27 10:12</div>Status To Do → In Progress (from ClickUp, event time)</div>
+  </div></section>`;
+}
+
+function wire() {
+  $('#clockIn')?.addEventListener('click', () => { if (showErr) return; setState('work'); });
+  $('#toggleErr')?.addEventListener('click', (e) => { e.preventDefault(); showErr = !showErr; render(); });
+  $('#clockOut')?.addEventListener('click', () => coDlg.showModal());
+  $('#upBtn')?.addEventListener('click', () => upDlg.showModal());
+  $('#viewSaved')?.addEventListener('click', (e) => { e.preventDefault(); page = 'history'; render(); });
+  document.querySelectorAll('[data-task]').forEach((b) => b.addEventListener('click', () => { taskId = b.dataset.task; render(); }));
+  $('#back')?.addEventListener('click', (e) => { e.preventDefault(); taskId = null; render(); });
+}
+setRole('employee');
+</script>
+</body>
+</html>
