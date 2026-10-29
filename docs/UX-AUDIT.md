@@ -139,3 +139,5 @@ Estimated effort: 4 to 6 working sessions. Estimate.
 - The weekly goal needs a number set by the Owner per job (for example tasks delivered per week). Not built yet.
 - Team task detail is now a summary (deadline, delivered, time on task, last update) plus three tabs: Work, Time, History.
 - Corrections: Review opens a side-by-side (recorded versus requested) with Approve & apply or Decline. A missing clock-out has two actions: Ask the employee, or Set the time.
+- **Working and Clock-out are one state.** Clock out is a button on the Working screen that opens the submit dialog.
+- **Managers and the Owner are also employees when they have tasks** (for example a manager who writes scripts). They get the same **Today** and **My History & Reports** tabs, first, then a divider, then their Team / Reports / Corrections (and People / Settings for the Owner) tabs.

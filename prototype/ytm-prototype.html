@@ -19,6 +19,7 @@
 .top a{padding:8px 12px;border-radius:8px;text-decoration:none;color:var(--ink);cursor:pointer}
 .top a.on{background:var(--brand);color:var(--brand-ink)}
 .me{color:var(--muted);font-size:.9rem}
+.sep{width:1px;background:var(--line);margin:4px 6px;align-self:stretch}
 main{max-width:760px;margin:0 auto;padding:16px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin:0 0 14px}
 .hero{text-align:center;padding:30px 16px}
@@ -62,8 +63,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:8px;bord
   <button class="pill" data-role="admin">Owner/Admin</button>
   <b id="stl" style="margin-left:12px">TODAY</b>
   <button class="pill on" data-state="before">Before</button>
-  <button class="pill" data-state="work">Working</button>
-  <button class="pill" id="openCo">Clock-out</button>
+  <button class="pill" data-state="work">Working (Clock out opens from here)</button>
   <button class="pill" data-state="after">After</button>
 </div>
 <header class="top"><div class="brand">YT Manager</div><nav id="nav"></nav><div class="me" id="me"></div></header>
@@ -77,33 +77,40 @@ const $ = (s, r = document) => r.querySelector(s);
 const main = $('#main'), nav = $('#nav'), dlg = $('#dlg');
 let role = 'employee', state = 'before', page = 'today', showErr = false, taskId = null, tdTab = 'work', rpt = 'week';
 const corr = { sara: 'pending', ali: 'open' };
+const WHO = {
+  employee: { name: 'Sara', job: 'Editor', task: 'V4 · Intro edit', st: 'In Progress', due: 'Fri 31 Oct', today: '2 h 05', more: [['V3 · Thumbnail set', 'Mon 3 Nov', 'sw'], ['V2 · Title research', 'Tue 4 Nov', 'blocked'], ['V1 · Outro cleanup', '', 'sw']], done: [['V4 · Intro edit', 'Tue 28'], ['V1 · Script draft', 'Mon 27']], doing: 'V3 · Thumbnail set', week: { pct: 83, of: '5 of 6 tasks delivered', days: '4 of 5 days', time: '22 h 10' } },
+  manager: { name: 'Omar', job: 'Writer', task: 'V2 · Script: Ancient Rome', st: 'In Progress', due: 'Thu 30 Oct', today: '1 h 40', more: [['V5 · Script: Silk Road', 'Mon 3 Nov', 'sw']], done: [['V1 · Script: Vikings', 'Tue 28']], doing: 'V5 · Script: Silk Road', week: { pct: 100, of: '2 of 2 tasks delivered', days: '5 of 5 days', time: '19 h 30' } },
+  admin: { name: 'Owner', job: 'Owner', task: null, st: '', due: '', today: '0 h 00', more: [], done: [], doing: null, week: { pct: 100, of: 'No personal goal set', days: '5 of 5 days', time: '0 h 00' } },
+};
+const who = () => WHO[role];
 
 const NAV = {
   employee: [['today', 'Today'], ['history', 'My History & Reports']],
-  manager: [['team', 'Team'], ['reports', 'Reports'], ['fix', 'Corrections']],
-  admin: [['team', 'Team'], ['reports', 'Reports'], ['fix', 'Corrections'], ['people', 'People'], ['settings', 'Settings']],
+  manager: [['today', 'Today'], ['history', 'My History & Reports'], ['|'], ['team', 'Team'], ['reports', 'Reports'], ['fix', 'Corrections']],
+  admin: [['today', 'Today'], ['history', 'My History & Reports'], ['|'], ['team', 'Team'], ['reports', 'Reports'], ['fix', 'Corrections'], ['people', 'People'], ['settings', 'Settings']],
 };
 const toast = (m) => { const t = $('#toast'); t.textContent = m; t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => (t.hidden = true), 2800); };
 function open(html) { dlg.innerHTML = html; dlg.showModal(); }
 const close = () => dlg.close();
 
-function setRole(r) { role = r; page = NAV[r][0][0]; taskId = null; const emp = r === 'employee'; $('#stl').hidden = !emp; document.querySelectorAll('[data-state],#openCo').forEach((b) => (b.hidden = !emp)); document.querySelectorAll('[data-role]').forEach((b) => b.classList.toggle('on', b.dataset.role === r)); render(); }
-function setState(s) { state = s; page = 'today'; document.querySelectorAll('[data-state]').forEach((b) => b.classList.toggle('on', b.dataset.state === s)); render(); }
+function setRole(r) { role = r; page = 'today'; taskId = null; state = 'before'; document.querySelectorAll('[data-state]').forEach((b) => b.classList.toggle('on', b.dataset.state === 'before')); document.querySelectorAll('[data-role]').forEach((b) => b.classList.toggle('on', b.dataset.role === r)); render(); }
+function setState(s) { state = s; page = 'today'; taskId = null; document.querySelectorAll('[data-state]').forEach((b) => b.classList.toggle('on', b.dataset.state === s)); render(); }
 document.querySelectorAll('[data-role]').forEach((b) => b.addEventListener('click', () => setRole(b.dataset.role)));
 document.querySelectorAll('[data-state]').forEach((b) => b.addEventListener('click', () => setState(b.dataset.state)));
-$('#openCo').addEventListener('click', () => { setState('work'); clockOutDlg(); });
 
 function render() {
-  nav.innerHTML = NAV[role].map(([id, l]) => `<a class="${id === page ? 'on' : ''}" data-p="${id}" tabindex="0">${l}</a>`).join('');
+  nav.innerHTML = NAV[role].map(([id, l]) => id === '|' ? '<span class="sep" aria-hidden="true"></span>' : `<a class="${id === page ? 'on' : ''}" data-p="${id}" tabindex="0">${l}</a>`).join('');
   nav.querySelectorAll('a').forEach((a) => a.addEventListener('click', () => { page = a.dataset.p; taskId = null; render(); }));
   $('#me').textContent = role === 'employee' ? 'Sara' : role === 'manager' ? 'Omar · Manager' : 'Owner';
-  main.innerHTML = (role === 'employee' ? employeeView : managerView)();
+  const own = page === 'today' || page === 'history';
+  main.innerHTML = (own ? employeeView : managerView)();
   wire();
 }
 
 /* ---------------- EMPLOYEE ---------------- */
 function employeeView() {
   if (page === 'history') return historyView();
+  const W = who();
   const date = '<div class="date">Wed 29 Oct · Shift 14:00 to 20:00</div>';
   if (state === 'before') return `<section class="card hero">${date}<div class="state">Not clocked in</div>
     <button class="btn go xl" id="clockIn">Clock in</button>
@@ -111,19 +118,16 @@ function employeeView() {
     <p class="small muted"><a href="#" id="toggleErr">${showErr ? 'hide' : 'show'} failed-check example</a></p></section>`;
   if (state === 'work') return `<section class="card hero">${date}<div class="state">Clocked in 14:02</div><div class="muted">3 h 10 min</div>
     <button class="btn stop xl" id="clockOut">Clock out</button></section>
-    <section class="card"><div class="row between"><h2>My Work</h2><span class="muted small">Today 2 h 05</span></div>
-      <div class="row between"><div><strong>V4 · Intro edit</strong><div class="row small" style="margin-top:2px"><span class="chip ok">In Progress</span><span class="muted">Due Fri 31 Oct</span></div></div><button class="btn small" id="upBtn">Update</button></div>
-      <details style="margin-top:10px"><summary class="muted">3 more tasks</summary>
-        <div class="item row between"><div>V3 · Thumbnail set <span class="muted small">· Mon 3 Nov</span></div><button class="btn small">Switch</button></div>
-        <div class="item row between"><div>V2 · Title research <span class="muted small">· Tue 4 Nov</span></div><span class="chip warn">Blocked</span></div>
-        <div class="item row between"><div>V1 · Outro cleanup</div><button class="btn small">Switch</button></div></details></section>`;
+    <section class="card"><div class="row between"><h2>My Work</h2><span class="muted small">Today ${W.today}</span></div>
+      ${W.task ? `<div class="row between"><div><strong>${W.task}</strong><div class="row small" style="margin-top:2px"><span class="chip ok">${W.st}</span><span class="muted">Due ${W.due}</span></div></div><button class="btn small" id="upBtn">Update</button></div>` : '<p class="muted">No tasks assigned to you.</p>'}
+      ${W.more.length ? `<details style="margin-top:10px"><summary class="muted">${W.more.length} more task${W.more.length > 1 ? 's' : ''}</summary>${W.more.map(([n, d, k]) => `<div class="item row between"><div>${n}${d ? ` <span class="muted small">· ${d}</span>` : ''}</div>${k === 'blocked' ? '<span class="chip warn">Blocked</span>' : '<button class="btn small">Switch</button>'}</div>`).join('')}</details>` : ''}</section>`;
   return `<section class="card hero">${date}<div class="state">Clocked out 20:03</div><div class="muted">6 h 01 min</div>
     <p><span class="chip ok">✓ Work saved</span> <a href="#" id="viewSaved">View</a></p></section>`;
 }
 function clockOutDlg() {
   open(`<h2>Clock out</h2>
-    <div class="item row between"><strong>V4 · Intro edit</strong><span class="chip ok">Update saved 16:40 ✓</span></div>
-    <div class="item"><strong>V3 · Thumbnail set</strong>
+    ${who().task ? '<div class="item row between"><strong>' + who().task + '</strong><span class="chip ok">Update saved 16:40 ✓</span></div>' : ''}
+    <div class="item"><strong>${who().doing || 'Other work'}</strong>
       <label class="f"><span>Link</span><input value="https://drive.example.com/f/thumbs-v3"></label>
       <label class="f"><span>What did you do?</span><textarea rows="2" placeholder="One sentence"></textarea></label>
       <details><summary class="muted small">Pending or blocked?</summary><textarea rows="2"></textarea></details></div>
@@ -133,7 +137,7 @@ function clockOutDlg() {
   $('#x').onclick = close; $('#ok').onclick = () => { close(); setState('after'); toast('Saved ✓'); };
 }
 function updateDlg() {
-  open(`<h2>Update · V4 Intro edit</h2>
+  open(`<h2>Update · ${who().task}</h2>
     <label class="f"><span>Link</span><input value="https://drive.example.com/f/v4-intro"></label>
     <label class="f"><span>What did you do?</span><textarea rows="3" placeholder="e.g. Intro and 12 sections edited; 8 remaining"></textarea></label>
     <details><summary class="muted small">Pending or blocked?</summary><textarea rows="2"></textarea></details>
@@ -143,15 +147,14 @@ function updateDlg() {
 
 function historyView() {
   const w = rpt === 'week';
-  const goal = w ? { pct: 83, of: '5 of 6 tasks delivered', days: '4 of 5 days', time: '22 h 10' } : { pct: 91, of: '21 of 23 tasks delivered', days: '17 of 18 days', time: '88 h 40' };
+  const W = who(); const goal = w ? W.week : { pct: 91, of: '21 of 23 tasks delivered', days: '17 of 18 days', time: '88 h 40' };
   return `<div class="tabs"><button class="btn ${w ? 'on' : ''}" data-rpt="week">This week</button><button class="btn ${w ? '' : 'on'}" data-rpt="month">This month</button></div>
   <section class="card"><div class="muted small">${w ? 'Weekly' : 'Monthly'} goal</div><div class="row" style="align-items:baseline"><span class="big">${goal.pct}%</span><span class="muted">${goal.of}</span></div>
     <div class="bar" style="margin:10px 0"><i style="width:${goal.pct}%"></i></div>
     <div class="facts"><div class="fact"><div class="l">Days present</div><div class="v">${goal.days}</div></div><div class="fact"><div class="l">Tasks delivered</div><div class="v">${goal.of.split(' tasks')[0]}</div></div><div class="fact"><div class="l">Recorded task time</div><div class="v">${goal.time}</div></div></div></section>
   <section class="card"><h2>Tasks done</h2>
-    <div class="item row between"><span>V4 · Intro edit</span><span class="chip ok">Ready for Upload · Tue 28</span></div>
-    <div class="item row between"><span>V1 · Script draft</span><span class="chip ok">Ready for Upload · Mon 27</span></div>
-    <div class="item row between"><span>V3 · Thumbnail set</span><span class="chip">In progress</span></div></section>
+    ${W.done.map(([n, d]) => `<div class="item row between"><span>${n}</span><span class="chip ok">Ready for Upload · ${d}</span></div>`).join('') || '<p class="muted">None yet.</p>'}
+    ${W.doing ? `<div class="item row between"><span>${W.doing}</span><span class="chip">In progress</span></div>` : ''}</section>
   <section class="card"><h2>Days</h2><table><tbody>
     <tr><td>Wed 29</td><td>6 h 01</td><td>2 updates</td><td></td></tr>
     <tr><td>Tue 28</td><td>5 h 48</td><td>1 update</td><td><a href="#" id="reqCorr">Request correction</a></td></tr>
