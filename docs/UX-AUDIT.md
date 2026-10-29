@@ -131,3 +131,11 @@ Estimate: typing and decision time at check-out falls from roughly 2 to 3 minute
 **Step 5: polish and release.** Visual pass, mobile check, tests for every new route (role isolation first), staging worker with its own database, one pilot day with Zain or Huzaifa, then production deploy with a database export taken first. Rollback is `wrangler rollback`.
 
 Estimated effort: 4 to 6 working sessions. Estimate.
+
+## Update after owner feedback (2026-10-29)
+- Today: much less text; **Clock in is green, Clock out is red**.
+- My History & Reports: the employee sees **goal achieved %**, tasks delivered, days present and recorded time for the week or month. **No comparison with earlier periods.**
+- **Comparison with earlier periods is visible to the Owner only.** Not to managers, not to employees. (This changes the monthly "previous month" block in the current Reports page: it must be removed for managers when built.)
+- The weekly goal needs a number set by the Owner per job (for example tasks delivered per week). Not built yet.
+- Team task detail is now a summary (deadline, delivered, time on task, last update) plus three tabs: Work, Time, History.
+- Corrections: Review opens a side-by-side (recorded versus requested) with Approve & apply or Decline. A missing clock-out has two actions: Ask the employee, or Set the time.
