@@ -66,10 +66,9 @@ export async function decide(ctx) {
   const note = str(body.note, 'note', { optional: true, max: 500 });
   const att = await env.DB.prepare('SELECT * FROM attendance WHERE id=?').bind(r.attendance_id).first();
   if (!body.approve) {
-    await env.DB.batch([
-      env.DB.prepare("UPDATE correction_requests SET status='declined',decided_by=?,decided_at=?,decision_note=? WHERE id=?").bind(emp.id, now, note, r.id),
-      auditStmt(env.DB, { at: now, actor: emp.id, action: 'correction_declined', entity: 'attendance', entityId: att.id, reason: note }),
-    ]);
+    const res = await env.DB.prepare("UPDATE correction_requests SET status='declined',decided_by=?,decided_at=?,decision_note=? WHERE id=? AND status='pending'").bind(emp.id, now, note, r.id).run();
+    if (!res.meta.changes) throw conflict('decided', 'That request was already decided.');
+    await env.DB.batch([auditStmt(env.DB, { at: now, actor: emp.id, action: 'correction_declined', entity: 'attendance', entityId: att.id, reason: note })]);
     return json({ ok: true, status: 'declined' });
   }
   const ci = r.req_check_in ?? att.check_in_at, co = r.req_check_out ?? att.check_out_at;
@@ -77,12 +76,16 @@ export async function decide(ctx) {
   const overlap = await env.DB.prepare('SELECT id FROM attendance WHERE employee_id=? AND id<>? AND check_in_at<? AND COALESCE(check_out_at,?)>?').bind(att.employee_id, att.id, co ?? now, now, ci).first();
   if (overlap) throw conflict('overlap', 'That overlaps another attendance record.');
   const status = co == null ? att.status : 'closed';
+  // The request row is claimed first; the attendance change and the audit line only happen if THIS call won the claim.
+  const mine = "EXISTS (SELECT 1 FROM correction_requests WHERE id=? AND status='approved' AND decided_by=? AND decided_at=?)";
   await env.DB.batch([
-    env.DB.prepare('UPDATE attendance SET check_in_at=?,check_out_at=?,status=?,corrected=1,asked_at=NULL WHERE id=?').bind(ci, co, status, att.id),
-    env.DB.prepare("UPDATE correction_requests SET status='approved',decided_by=?,decided_at=?,decision_note=? WHERE id=?").bind(emp.id, now, note, r.id),
-    auditStmt(env.DB, { at: now, actor: emp.id, action: 'attendance_corrected', entity: 'attendance', entityId: att.id,
-      before: { check_in_at: att.check_in_at, check_out_at: att.check_out_at, status: att.status }, after: { check_in_at: ci, check_out_at: co, status }, reason: `Approved request: ${r.reason}` }),
+    env.DB.prepare("UPDATE correction_requests SET status='approved',decided_by=?,decided_at=?,decision_note=? WHERE id=? AND status='pending'").bind(emp.id, now, note, r.id),
+    env.DB.prepare(`UPDATE attendance SET check_in_at=?,check_out_at=?,status=?,corrected=1,asked_at=NULL WHERE id=? AND ${mine}`).bind(ci, co, status, att.id, r.id, emp.id, now),
+    env.DB.prepare(`INSERT INTO audit_log(at_ms,actor_id,action,entity,entity_id,before_json,after_json,reason) SELECT ?,?,?,?,?,?,?,? WHERE ${mine}`)
+      .bind(now, emp.id, 'attendance_corrected', 'attendance', att.id, JSON.stringify({ check_in_at: att.check_in_at, check_out_at: att.check_out_at, status: att.status }), JSON.stringify({ check_in_at: ci, check_out_at: co, status }), `Approved request: ${r.reason}`, r.id, emp.id, now),
   ]);
+  const after = await env.DB.prepare('SELECT status,decided_by,decided_at FROM correction_requests WHERE id=?').bind(r.id).first();
+  if (!(after.status === 'approved' && after.decided_by === emp.id && after.decided_at === now)) throw conflict('decided', 'That request was already decided.');
   await rebuildEmployee(env, att.employee_id, Math.min(ci, att.check_in_at), now);
   return json({ ok: true, status: 'approved' });
 }

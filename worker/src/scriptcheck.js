@@ -60,7 +60,7 @@ export async function getConfig(db) {
   const c = await getSetting(db, 'script_checks', { jobs: {} });
   return c.jobs ? c : { jobs: {} };
 }
-export const rulesFor = (cfg, jobRole) => (jobRole && cfg.jobs?.[String(jobRole).toLowerCase()]?.rules) || [];
+export const rulesFor = (cfg, jobRole) => (jobRole && Object.prototype.hasOwnProperty.call(cfg.jobs || {}, String(jobRole).toLowerCase()) && cfg.jobs[String(jobRole).toLowerCase()]?.rules) || [];
 
 // Runs the DEPOSIT check for one deposit and stores the outcome. Never throws and never blocks checkout.
 export async function checkDeposit(env, dep, jobRole, now) {

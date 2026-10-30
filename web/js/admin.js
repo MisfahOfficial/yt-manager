@@ -223,11 +223,22 @@ function importBox() {
   const b = h('button', { class: 'btn', type: 'button' }, 'Import');
   b.addEventListener('click', busy(b, async () => {
     let data; try { data = JSON.parse(ta.value); } catch { announce('That is not valid JSON.', 'err'); return; }
+    // The server accepts small requests, so the old data is sent in pieces of 100 records. Running it twice is safe: duplicates are ignored.
+    const kinds = ['attendance', 'workLogs', 'tasks', 'calVideos', 'videos'];
+    const people = []; let archived = 0, created = 0;
     try {
-      const r = await post('/api/admin/import-legacy', data);
-      announce(`Imported ${r.employees.length} people and ${r.archived} records ✓`);
-      if (r.temp_passwords.length) dialog('Temporary passwords (shown once)', h('div', { class: 'stack' }, h('p', {}, 'Imported people need a real email set under People, then this password.'), h('pre', { class: 'mono' }, r.temp_passwords.map((t) => `${t.name}: ${t.temp_password}`).join('\n'))), (close) => [h('button', { class: 'btn primary', type: 'button', onclick: close }, 'Done')]);
-    } catch (e) { announce(e.message, 'err'); }
+      const first = await post('/api/admin/import-legacy', { members: (data.members || []).slice(0, 200) });
+      created += first.employees.length; archived += first.archived; people.push(...first.temp_passwords);
+      for (const k of kinds) {
+        const rows = Array.isArray(data[k]) ? data[k] : [];
+        for (let i = 0; i < rows.length; i += 100) {
+          announce(`Importing ${k}… ${Math.min(i + 100, rows.length)} of ${rows.length}`);
+          archived += (await post('/api/admin/import-legacy', { [k]: rows.slice(i, i + 100) })).archived;
+        }
+      }
+      announce(`Imported ${created} people and ${archived} records ✓`);
+      if (people.length) dialog('Temporary passwords (shown once)', h('div', { class: 'stack' }, h('p', {}, 'Imported people need a real email set under People, then this password.'), h('pre', { class: 'mono' }, people.map((t) => `${t.name}: ${t.temp_password}`).join('\n'))), (close) => [h('button', { class: 'btn primary', type: 'button', onclick: close }, 'Done')]);
+    } catch (e) { announce(e.message + ' You can run the import again: nothing is duplicated.', 'err'); }
   }));
   return h('div', { class: 'stack' }, ta, b);
 }

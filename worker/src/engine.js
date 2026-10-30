@@ -1,9 +1,34 @@
 // Loads facts from D1, runs the pure engine, and rewrites derived task_sessions for one employee.
-import { computeSessions, shiftWindows, statusTimeline, deliveries, DEFAULT_STATUS_MAP } from './lib/timer.js';
+import { computeSessions, shiftWindows, statusTimeline, deliveries, classify, DEFAULT_STATUS_MAP } from './lib/timer.js';
 import { localDate, localMidnightMs, addDays } from './lib/time.js';
 import { getSetting } from './http.js';
 
 export const MAX_OPEN_MS = 18 * 3600000;
+
+const IN_CHUNK = 80;
+const inList = (n) => Array.from({ length: n }, () => '?').join(',');
+async function inChunks(ids, run) { const out = []; for (let i = 0; i < ids.length; i += IN_CHUNK) out.push(...(await run(ids.slice(i, i + IN_CHUNK))).results); return out; }
+
+export async function loadTasksByIds(db, ids) {
+  const rows = await inChunks(ids, (c) => db.prepare(`SELECT id,name,url,list_name,status FROM tasks WHERE id IN (${inList(c.length)})`).bind(...c).all());
+  return new Map(rows.map((r) => [r.id, r]));
+}
+export async function loadEventsByTask(db, ids) {
+  const rows = await inChunks(ids, (c) => db.prepare(`SELECT * FROM task_events WHERE task_id IN (${inList(c.length)}) ORDER BY at_ms,id`).bind(...c).all());
+  const m = new Map(ids.map((i) => [i, []]));
+  for (const r of rows) m.get(r.task_id)?.push(r);
+  return m;
+}
+// Only the tasks that can matter for a time window: assigned during it, and either still open or touched inside it.
+export async function relevantTasks(db, clickupId, fromMs, toMs, map) {
+  const ids = (await db.prepare('SELECT DISTINCT task_id FROM task_assignees WHERE clickup_user_id=? AND start_ms<? AND (end_ms IS NULL OR end_ms>?)').bind(clickupId, toMs, fromMs).all()).results.map((r) => r.task_id);
+  const tasks = await loadTasksByIds(db, ids);
+  const finished = [];
+  const keep = new Set();
+  for (const id of ids) { const t = tasks.get(id); const cls = classify(t?.status, map); if (!t || cls === 'done' || cls === 'ignore') finished.push(id); else keep.add(id); }
+  if (finished.length) for (const r of await inChunks(finished, (c) => db.prepare(`SELECT DISTINCT task_id FROM task_events WHERE task_id IN (${inList(c.length)}) AND at_ms>=? AND at_ms<?`).bind(...c, fromMs, toMs).all())) keep.add(r.task_id);
+  return { ids: [...keep], tasks };
+}
 
 export async function loadShiftContext(db, employeeId, fromMs, toMs) {
   const asg = (await db.prepare(
@@ -31,7 +56,8 @@ export async function statusMap(db, jobRole = null) {
   const base = { ...DEFAULT_STATUS_MAP, ...(await getSetting(db, 'status_map', {})) };
   if (!jobRole) return base;
   const per = await getSetting(db, 'role_status_maps', {});
-  return { ...base, ...(per[String(jobRole).toLowerCase()] || {}) };
+  const k = String(jobRole).toLowerCase();
+  return { ...base, ...(Object.prototype.hasOwnProperty.call(per, k) ? per[k] : {}) };
 }
 
 export async function rebuildEmployee(env, employeeId, sinceMs, now = Date.now()) {
@@ -48,12 +74,12 @@ export async function rebuildEmployee(env, employeeId, sinceMs, now = Date.now()
 
   const tasks = [];
   if (emp.clickup_user_id) {
-    const taskIds = (await db.prepare(
-      'SELECT DISTINCT task_id FROM task_assignees WHERE clickup_user_id=? AND (end_ms IS NULL OR end_ms>?)').bind(emp.clickup_user_id, since).all()).results.map((r) => r.task_id);
-    for (const id of taskIds) {
-      const events = (await db.prepare('SELECT * FROM task_events WHERE task_id=? ORDER BY at_ms,id').bind(id).all()).results;
-      const asg = (await db.prepare('SELECT start_ms,end_ms,start_known FROM task_assignees WHERE task_id=? AND clickup_user_id=?').bind(id, emp.clickup_user_id).all()).results
-        .map((a) => ({ start: a.start_known ? a.start_ms : 0, end: a.end_ms ?? Infinity }));
+    const { ids } = await relevantTasks(db, emp.clickup_user_id, since - 86400000, now + 1, map);
+    const evMap = await loadEventsByTask(db, ids);
+    const asgRows = await inChunks(ids, (c) => db.prepare(`SELECT task_id,start_ms,end_ms,start_known FROM task_assignees WHERE clickup_user_id=? AND task_id IN (${inList(c.length)})`).bind(emp.clickup_user_id, ...c).all());
+    for (const id of ids) {
+      const events = evMap.get(id) || [];
+      const asg = asgRows.filter((a) => a.task_id === id).map((a) => ({ start: a.start_known ? a.start_ms : 0, end: a.end_ms ?? Infinity }));
       tasks.push({ id, timeline: statusTimeline(events, map), assigned: asg, deliveredAt: deliveries(events, map).map((d) => d.at) });
     }
   }

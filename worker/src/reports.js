@@ -2,7 +2,7 @@ import { json, bad, forbidden, getSetting } from './http.js';
 import { codeOf, normTitle, channelOf, isAutomation } from './lib/titles.js';
 import { loadChannels } from './calendar.js';
 import { teamIds } from './work.js';
-import { loadShiftContext, attendanceEnd, statusMap } from './engine.js';
+import { loadShiftContext, attendanceEnd, statusMap, relevantTasks, loadEventsByTask } from './engine.js';
 import { statusTimeline, deliveries, applicableDeadline, classify, normalize, intersect, total } from './lib/timer.js';
 import { periodRange, localMidnightMs, addDays, localDate, prevPeriod, isYmd, weekStart } from './lib/time.js';
 
@@ -58,7 +58,7 @@ export async function employeeReport(env, emp, kind, period, now, map, trackJobs
   const latest = new Map(chk.map((c) => [c.link, { ...c, task_name: null }]));
   const tchk = (await db.prepare('SELECT c.task_id,c.result_json check_json,t.name task_name,t.url FROM task_checks c LEFT JOIN tasks t ON t.id=c.task_id WHERE c.employee_id=? AND c.checked_at>=? AND c.checked_at<?').bind(emp.id, fromMs, toMs).all()).results;
   for (const c of tchk) latest.set('task:' + c.task_id, { id: c.task_id, link: c.url, task_name: c.task_name, check_json: c.check_json });
-  const scriptChecks = { checked: 0, passed: 0, failed: 0, unavailable: 0, by_rule: {}, failing: [] };
+  const scriptChecks = { checked: 0, passed: 0, failed: 0, unavailable: 0, by_rule: Object.create(null), failing: [] };
   for (const c of latest.values()) {
     const r = JSON.parse(c.check_json);
     if (r.status !== 'ok') { scriptChecks.unavailable++; continue; }
@@ -82,10 +82,12 @@ export async function employeeReport(env, emp, kind, period, now, map, trackJobs
   const deliveredTasks = []; let onTime = 0, overdue = 0, noDeadline = 0, revDelivered = 0;
   const blockers = []; const gapsOut = [];
   if (emp.clickup_user_id) {
-    const tids = (await db.prepare('SELECT DISTINCT task_id FROM task_assignees WHERE clickup_user_id=?').bind(emp.clickup_user_id).all()).results.map((r) => r.task_id);
+    const { ids: tids, tasks: taskRows } = await relevantTasks(db, emp.clickup_user_id, fromMs, toMs, map);
+    const evMap = await loadEventsByTask(db, tids);
+    const gapRows = tids.length ? (await Promise.all(Array.from({ length: Math.ceil(tids.length / 80) }, (_, i) => { const c = tids.slice(i * 80, i * 80 + 80); return db.prepare(`SELECT task_id,from_ms,to_ms,reason FROM gaps WHERE task_id IN (${c.map(() => '?').join(',')}) AND to_ms>? AND from_ms<?`).bind(...c, fromMs, toMs).all(); }))).flatMap((r) => r.results) : [];
     for (const id of tids) {
-      const ev = (await db.prepare('SELECT * FROM task_events WHERE task_id=? ORDER BY at_ms,id').bind(id).all()).results;
-      const t = await db.prepare('SELECT id,name,url,list_name,work_type FROM tasks WHERE id=?').bind(id).first();
+      const ev = evMap.get(id) || [];
+      const t = taskRows.get(id);
       const dl = deliveries(ev, map);
       const due = ev.filter((e) => e.kind === 'due');
       dl.forEach((d) => {
@@ -102,8 +104,7 @@ export async function employeeReport(env, emp, kind, period, now, map, trackJobs
         if (e <= fromMs || seg.start >= toMs) continue;
         blockers.push({ task_id: id, name: t?.name, url: t?.url, status: seg.status, from: seg.start, to: seg.end, ms: Math.min(e, toMs) - Math.max(seg.start, fromMs), reason: 'No reason recorded in ClickUp' });
       }
-      const g = (await db.prepare('SELECT from_ms,to_ms,reason FROM gaps WHERE task_id=? AND to_ms>? AND from_ms<?').bind(id, fromMs, toMs).all()).results;
-      g.forEach((x) => gapsOut.push({ task_id: id, name: t?.name, ...x }));
+      gapRows.filter((g) => g.task_id === id).forEach((x) => gapsOut.push({ task_id: id, name: t?.name, from_ms: x.from_ms, to_ms: x.to_ms, reason: x.reason }));
     }
   } else warn.push('Not linked to a ClickUp user: tasks and recorded time are not available.');
 
@@ -114,7 +115,7 @@ export async function employeeReport(env, emp, kind, period, now, map, trackJobs
     const all = (await db.prepare('SELECT id,name FROM tasks WHERE deleted=0 LIMIT 20000').all()).results;
     const seen = new Map();
     for (const t of all) { const k = normTitle(t.name); if (k) { if (!seen.has(k)) seen.set(k, []); seen.get(k).push(t.id); } }
-    created = { total: mine.length, by_code: {}, no_code: [], days: {}, duplicates: [], note: 'Counts tasks this person created in ClickUp. It does not judge title quality.' };
+    created = { total: mine.length, by_code: Object.create(null), no_code: [], days: Object.create(null), duplicates: [], note: 'Counts tasks this person created in ClickUp. It does not judge title quality.' };
     for (const t of mine) {
       const c = codeOf(t.name);
       if (c) created.by_code[c] = (created.by_code[c] || 0) + 1; else created.no_code.push({ id: t.id, name: t.name, url: t.url });
@@ -136,7 +137,7 @@ export async function employeeReport(env, emp, kind, period, now, map, trackJobs
   // work types: the person's category (from their job) with automation-made thumbnails kept apart
   const roleCat = (extra.cats || []).find((c) => c.active && c.job_role && emp.job_role && c.job_role.toLowerCase() === emp.job_role.toLowerCase())?.name || emp.job_role || 'Other';
   const catOf = (n) => (isAutomation(n) ? 'Thumbnail (automation)' : roleCat);
-  const workTypes = {};
+  const workTypes = Object.create(null);
   const wt = (k) => (workTypes[k] ||= { delivered: 0, ms: 0 });
   for (const d of deliveredTasks) wt(catOf(d.name)).delivered++;
   if (byTask.size) {
@@ -209,10 +210,10 @@ export async function buildReport(env, ids, kind, period, now, opts = {}) {
     out.previous = { period: pp, against, label: AGAINST[against], totals: pt, comparable, comparable_note: comparable ? 'Compare per scheduled day; period lengths and shifts differ.' : 'Not comparable (no scheduled days in one of the periods).' };
   }
   {
-  const byCh = {};
+  const byCh = Object.create(null);
     for (const r of rows) for (const t of r.delivery.tasks) { const c = (byCh[t.channel] ||= { delivered: 0, on_time: 0, overdue: 0 }); c.delivered++; if (t.on_time === true) c.on_time++; if (t.on_time === false) c.overdue++; }
     out.by_channel = byCh;
-    const byWt = {};
+    const byWt = Object.create(null);
     for (const r of rows) for (const [k, v] of Object.entries(r.work_types || {})) { const c = (byWt[k] ||= { people: 0, delivered: 0, ms: 0 }); c.people++; c.delivered += v.delivered; c.ms += v.ms; }
     out.by_work_type = byWt;
   }
@@ -220,7 +221,7 @@ export async function buildReport(env, ids, kind, period, now, opts = {}) {
     const rep = new Map();
     for (const r of rows) for (const b of r.blockers) rep.set(b.task_id, (rep.get(b.task_id) || 0) + 1);
     out.repeated_blockers = [...rep.entries()].filter(([, n]) => n > 1).map(([task_id, n]) => ({ task_id, times: n }));
-    const byRole = {};
+    const byRole = Object.create(null);
     for (const r of rows) { const k = r.employee.job_role || 'No job role set'; const c = (byRole[k] ||= { people: 0, delivered: 0, on_time: 0, overdue: 0, original_ms: 0, revision_ms: 0 }); c.people++; c.delivered += r.delivery.delivered; c.on_time += r.delivery.on_time; c.overdue += r.delivery.overdue; c.original_ms += r.recorded_time.original_ms; c.revision_ms += r.recorded_time.revision_ms; }
     out.by_role = byRole;
     out.review_notes = rows.map((r) => ({ employee: r.employee.name, notes: [

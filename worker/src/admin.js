@@ -1,5 +1,5 @@
 import { HttpError, bad, forbidden, notFound, conflict, json, str, int, httpUrl, audit, auditStmt, getSetting, setSettingStmt } from './http.js';
-import { newPasswordRecord, uuid } from './lib/crypto.js';
+import { newPasswordRecord, uuid, sha256Hex } from './lib/crypto.js';
 import { tempPassword } from './auth.js';
 import { validIpRule } from './lib/net.js';
 import { isYmd, localDate, localMidnightMs } from './lib/time.js';
@@ -10,6 +10,8 @@ import { clientIp } from './attendance.js';
 import { teamIds } from './work.js';
 
 const ROLES = ['employee', 'manager', 'admin'];
+const BAD_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+const safeKey = (k) => { const t = String(k).trim().toLowerCase(); if (BAD_KEYS.has(t)) throw bad('bad_key', 'That name is not allowed.'); return t; };
 const pub = (e) => ({ id: e.id, name: e.name, email: e.email, role: e.role, job_role: e.job_role, can_correct: !!e.can_correct, manager_id: e.manager_id, active: !!e.active, clickup_user_id: e.clickup_user_id, must_change_pw: !!e.must_change_pw });
 
 export async function listEmployees(ctx) {
@@ -170,12 +172,13 @@ const SETTING_KEYS = {
   sync_time_min: (v) => int(v, 'sync time', { min: 0, max: 1439 }),
   clickup_team_id: (v) => str(String(v), 'workspace', { max: 40 }),
   revisions_status: (v) => (v ? str(v, 'status', { max: 60 }) : null),
-  status_map: (v) => { if (!v || typeof v !== 'object') throw bad('bad_map'); const ok = ['active', 'revision', 'paused', 'done', 'other', 'ignore']; for (const [k, c] of Object.entries(v)) if (!ok.includes(c) || k.length > 60) throw bad('bad_map', 'Status mapping is not valid.'); return Object.fromEntries(Object.entries(v).map(([k, c]) => [k.toLowerCase().trim(), c])); },
+  status_map: (v) => { if (!v || typeof v !== 'object' || Array.isArray(v)) throw bad('bad_map'); const ok = ['active', 'revision', 'paused', 'done', 'other', 'ignore']; const e = Object.entries(v); if (e.length > 200) throw bad('bad_map', 'Too many statuses.'); for (const [k, c] of e) if (!ok.includes(c) || k.length > 60) throw bad('bad_map', 'Status mapping is not valid.'); return Object.fromEntries(e.map(([k, c]) => [safeKey(k), c])); },
   auto_reports: (v) => !!v,
   job_goals: (v) => {
     if (!v || typeof v !== 'object' || Array.isArray(v)) throw bad('bad_goals', 'Goals are not valid.');
     const out = {};
-    for (const [job, n] of Object.entries(v)) { if (job.length > 40) throw bad('bad_goals'); out[job.toLowerCase().trim()] = int(n, 'goal', { min: 0, max: 1000 }); }
+    if (Object.keys(v).length > 50) throw bad('bad_goals', 'Too many jobs.');
+    for (const [job, n] of Object.entries(v)) { if (job.length > 40) throw bad('bad_goals'); out[safeKey(job)] = int(n, 'goal', { min: 0, max: 1000 }); }
     return out;
   },
   report_layout: (v) => {
@@ -190,9 +193,10 @@ const SETTING_KEYS = {
     if (!v || typeof v !== 'object' || !v.jobs || typeof v.jobs !== 'object') throw bad('bad_checks', 'Script check settings are not valid.');
     const types = ['ref_images', 'links', 'images', 'text', 'words', 'desc_links', 'desc_items', 'desc_words'];
     const jobs = {};
+    if (Object.keys(v.jobs).length > 12) throw bad('bad_checks', 'Too many jobs.');
     for (const [job, cfg] of Object.entries(v.jobs)) {
       if (job.length > 40 || !Array.isArray(cfg.rules) || cfg.rules.length > 12) throw bad('bad_checks', 'Script check settings are not valid.');
-      jobs[job.toLowerCase().trim()] = { rules: cfg.rules.map((r, i) => {
+      jobs[safeKey(job)] = { rules: cfg.rules.map((r, i) => {
         if (!types.includes(r.type)) throw bad('bad_checks', 'Unknown check type.');
         const min = r.type === 'text' ? null : int(r.min ?? 1, 'minimum', { min: 1, max: 100000 });
         if (r.type === 'text' && !String(r.value || '').trim()) throw bad('bad_checks', 'Type the words that must appear.');
@@ -204,7 +208,8 @@ const SETTING_KEYS = {
   role_status_maps: (v) => {
     if (!v || typeof v !== 'object' || Array.isArray(v)) throw bad('bad_map');
     const out = {};
-    for (const [role, m] of Object.entries(v)) { if (role.length > 40) throw bad('bad_map'); out[role.toLowerCase().trim()] = SETTING_KEYS.status_map(m); }
+    if (Object.keys(v).length > 20) throw bad('bad_map', 'Too many jobs.');
+    for (const [role, m] of Object.entries(v)) { if (role.length > 40) throw bad('bad_map'); out[safeKey(role)] = SETTING_KEYS.status_map(m); }
     return out;
   },
 };
@@ -277,7 +282,8 @@ export async function attendanceList(ctx) {
 export async function importLegacy(ctx) {
   const { env, body, now, emp } = ctx;
   const members = Array.isArray(body.members) ? body.members : [];
-  if (!members.length && !Array.isArray(body.attendance)) throw bad('empty', 'Nothing to import.');
+  const any = ['members', 'attendance', 'workLogs', 'tasks', 'calVideos', 'videos'].some((k) => Array.isArray(body[k]) && body[k].length);
+  if (!any) throw bad('empty', 'Nothing to import.');
   const out = { employees: [], temp_passwords: [], archived: 0 };
   const idMap = new Map();
   for (const m of members.slice(0, 200)) {
@@ -295,11 +301,12 @@ export async function importLegacy(ctx) {
     out.employees.push({ id, name: m.name, email });
     out.temp_passwords.push({ name: m.name, email, temp_password: pw });
   }
+  const empOf = async (legacy) => { if (idMap.has(legacy)) return idMap.get(legacy); const r = await env.DB.prepare('SELECT id FROM employees WHERE legacy_id=?').bind(legacy).first(); idMap.set(legacy, r?.id || null); return r?.id || null; };
   const arch = async (kind, rec, lidKey = 'id') => {
-    const lid = rec[lidKey] != null ? String(rec[lidKey]) : (kind + ':' + (rec.memberId ?? '') + ':' + (rec.date ?? '') + ':' + (rec.clockIn ?? ''));
+    const lid = rec[lidKey] != null ? String(rec[lidKey]) : kind + ':' + (await sha256Hex(JSON.stringify(Object.keys(rec).sort().map((k) => [k, rec[k]]))));
     const clean = { ...rec }; delete clean.password; delete clean.sheetPassword;
     const r = await env.DB.prepare('INSERT OR IGNORE INTO legacy_records(kind,legacy_id,employee_id,data_json,imported_at) VALUES (?,?,?,?,?)')
-      .bind(kind, lid, idMap.get(String(rec.memberId ?? rec.id)) || null, JSON.stringify(clean), now).run();
+      .bind(kind, lid, await empOf(String(rec.memberId ?? rec.id)), JSON.stringify(clean), now).run();
     out.archived += r.meta.changes;
   };
   for (const m of members) await arch('member', m);

@@ -167,8 +167,10 @@ export async function handle(request, env, execCtx) {
 }
 
 // keep tables small: nothing here is needed after it expires
-async function housekeeping(db, now) {
+export async function housekeeping(db, now) {
   await db.batch([
+    // privacy: network addresses are only needed for recent audits
+    db.prepare('UPDATE attendance SET ip=NULL,checkout_ip=NULL WHERE (ip IS NOT NULL OR checkout_ip IS NOT NULL) AND check_in_at<?').bind(now - 180 * 86400000),
     db.prepare('DELETE FROM nonces WHERE expires_at<?').bind(now),
     db.prepare('DELETE FROM sessions WHERE expires_at<?').bind(now),
     db.prepare('DELETE FROM login_attempts WHERE at<?').bind(now - 86400000),

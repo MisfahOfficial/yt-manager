@@ -11,7 +11,8 @@ export const DEFAULT_STATUS_MAP = {
 };
 export function classify(status, map = DEFAULT_STATUS_MAP) {
   if (status == null) return 'unknown';
-  return map[String(status).trim().toLowerCase()] || 'other';
+  const k = String(status).trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(map, k) && typeof map[k] === 'string' ? map[k] : 'other';
 }
 
 // ---------- interval algebra ----------

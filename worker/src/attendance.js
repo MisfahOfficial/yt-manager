@@ -54,7 +54,7 @@ export async function today(ctx) {
     const weekStart = localMidnightMs(addDays(localDate(now), -((new Date(localDate(now) + 'T00:00:00Z').getUTCDay() + 6) % 7)));
     const rows = (await env.DB.prepare('SELECT name,created_ms FROM tasks WHERE creator_id=? AND created_ms>=? AND deleted=0').bind(emp.clickup_user_id, weekStart).all()).results;
     const { codeOf } = await import('./lib/titles.js');
-    created = { today: rows.filter((r) => r.created_ms >= dayStart).length, week: rows.length, by_code: {} };
+    created = { today: rows.filter((r) => r.created_ms >= dayStart).length, week: rows.length, by_code: Object.create(null) };
     for (const r of rows) { const c = codeOf(r.name) || 'No code'; created.by_code[c] = (created.by_code[c] || 0) + 1; }
   }
   let unverified = [];
