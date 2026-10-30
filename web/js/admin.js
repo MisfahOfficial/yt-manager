@@ -138,7 +138,7 @@ function revokeDialog(d, done) {
 export async function settingsPage(root, me) {
   me0 = me;
   root.replaceChildren(h('p', { class: 'muted' }, 'Loading…'));
-  let s, ex, hl, shifts; try { [s, ex, hl, shifts] = await Promise.all([get('/api/admin/settings'), get('/api/admin/network-exceptions'), get('/api/admin/clickup/health'), get('/api/admin/shifts')]); } catch (e) { root.replaceChildren(errBox(e)); return; }
+  let s, ex, hl, shifts, rf; try { [s, ex, hl, shifts, rf] = await Promise.all([get('/api/admin/settings'), get('/api/admin/network-exceptions'), get('/api/admin/clickup/health'), get('/api/admin/shifts'), get('/api/admin/network-refusals').catch(() => ({ refusals: [] }))]); } catch (e) { root.replaceChildren(errBox(e)); return; }
   const reload = () => settingsPage(root, me);
   const save = async (patch, msg = 'Saved ✓') => { try { await post('/api/admin/settings', patch); announce(msg); reload(); } catch (e) { announce(e.message, 'err'); } };
 
@@ -151,7 +151,9 @@ export async function settingsPage(root, me) {
     ips.length ? h('ul', {}, ips.map((ip) => { const b = h('button', { class: 'btn small', type: 'button' }, 'Remove'); b.addEventListener('click', () => confirm(`Remove ${ip}? Nobody will be able to check in from it.`) && save({ office_ips: ips.filter((x) => x !== ip) })); return h('li', { class: 'row between' }, h('span', { class: 'mono' }, ip), b); }))
       : h('div', { class: 'warnbox' }, 'No office address is set, so nobody can check in.'),
     h('div', { class: 'row' }, addIp, (() => { const b = h('button', { class: 'btn', type: 'button' }, 'Add'); b.addEventListener('click', () => addIp.value && save({ office_ips: [...ips, addIp.value.trim()] })); return b; })(),
-      s.detected_ip && !ips.includes(v6to64(s.detected_ip)) ? (() => { const b = h('button', { class: 'btn', type: 'button' }, 'Add my current address'); b.addEventListener('click', () => confirm(`Only do this while you are in the office on the office network. Add ${v6to64(s.detected_ip)}?`) && save({ office_ips: [...ips, v6to64(s.detected_ip)] })); return b; })() : null));
+      s.detected_ip && !s.on_vpn && !ips.includes(v6to64(s.detected_ip)) ? (() => { const b = h('button', { class: 'btn', type: 'button' }, 'Add my current address'); b.addEventListener('click', () => confirm(`Only do this while you are in the office on the office network. Add ${v6to64(s.detected_ip)}?`) && save({ office_ips: [...ips, v6to64(s.detected_ip)] })); return b; })() : null),
+    s.on_vpn ? h('div', { class: 'warnbox' }, 'You are connected through a VPN (Cloudflare WARP), so this is not your office address. Turn the VPN off, reload, then add the office address.') : null,
+    refusedBlock(rf.refusals, ips, save));
 
   const exWhy = h('input', { type: 'text', minlength: 10, maxlength: 300, placeholder: 'Why? e.g. Office internet is down' });
   const exHours = h('select', {}, [1, 2, 4, 8, 24].map((n) => h('option', { value: n, selected: n === 4 }, `${n} hour${n > 1 ? 's' : ''}`)));
@@ -422,4 +424,14 @@ async function backupsCard() {
     h('div', { class: 'row' }, h('span', { class: 'muted small' }, 'Year'), year, link('attendance', 'Attendance'), link('updates', 'Work updates'), link('monthly', 'Monthly summary')),
     h('p', { class: 'muted small' }, 'In Google Sheets: File → Import → Upload. Contains employee data: keep the file private.')));
   return card;
+}
+
+// Recent refused check-ins, newest first, with a one-click "this is the office" for real networks.
+function refusedBlock(list, ips, save) {
+  const shown = list.filter((r) => !r.already_allowed);
+  if (!shown.length) return null;
+  return h('div', { class: 'subbox' }, h('strong', {}, 'Refused in the last 7 days'),
+    h('p', { class: 'muted small' }, 'These people were signed in on their approved computer but their network is not on your list. Allow it only if you know it is your office.'),
+    ...shown.map((r) => h('div', { class: 'item row between' }, h('div', {}, h('strong', {}, r.name), ' ', r.is_vpn ? chip('VPN', 'warn') : null, h('div', { class: 'muted small mono' }, `${r.ip} · ${r.count}× · ${fmtDateTime(r.last_at)}`)),
+      r.is_vpn ? h('span', { class: 'muted small' }, 'Ask them to turn the VPN off') : (() => { const b = h('button', { class: 'btn small', type: 'button' }, 'This is the office'); b.addEventListener('click', () => confirm(`Allow ${v6to64(r.ip)} as your office network? Everyone on it will be able to check in.`) && save({ office_ips: [...ips, v6to64(r.ip)] })); return b; })())));
 }

@@ -6,7 +6,8 @@ import { isYmd, localDate, localMidnightMs } from './lib/time.js';
 import { rebuildEmployee, statusMap } from './engine.js';
 import { classify } from './lib/timer.js';
 import { rebuildLinked } from './clickup.js';
-import { clientIp } from './attendance.js';
+import { clientIp, onVpn } from './attendance.js';
+import { ipMatches } from './lib/net.js';
 import { teamIds } from './work.js';
 
 const ROLES = ['employee', 'manager', 'admin'];
@@ -216,7 +217,7 @@ const SETTING_KEYS = {
 export async function getSettings(ctx) {
   const out = {};
   for (const k of Object.keys(SETTING_KEYS)) out[k] = await getSetting(ctx.env.DB, k, k === 'sync_time_min' ? 1110 : k === 'office_ips' ? [] : k === 'status_map' ? {} : k === 'auto_reports' ? true : k === 'role_status_maps' ? {} : k === 'script_checks' ? { jobs: {} } : k === 'created_tracking_jobs' ? [] : k === 'job_goals' ? {} : k === 'report_layout' ? { columns: { goal: true, delivered: true, days: true, time: false, late: false, titles: false }, compare: { enabled: true, against: 'previous' } } : null);
-  return json({ settings: out, detected_ip: clientIp(ctx.req) });
+  return json({ settings: out, detected_ip: clientIp(ctx.req), on_vpn: onVpn(ctx.req) });
 }
 export async function putSettings(ctx) {
   const { env, body, now, emp } = ctx;
@@ -224,6 +225,7 @@ export async function putSettings(ctx) {
   for (const [k, v] of Object.entries(body)) {
     if (!SETTING_KEYS[k]) throw bad('unknown_setting', `Unknown setting ${k}.`);
     const val = SETTING_KEYS[k](v);
+    if (k === 'office_ips' && onVpn(ctx.req) && val.some((rule) => ipMatches(clientIp(ctx.req), rule))) throw bad('vpn_address', 'That address belongs to a VPN (Cloudflare WARP), not your office. Turn the VPN off, then add the address again.');
     changed[k] = { before: await getSetting(env.DB, k, null), after: val };
     stmts.push(setSettingStmt(env.DB, k, val));
   }
@@ -321,4 +323,12 @@ export async function legacyList(ctx) {
   const kind = ctx.url.searchParams.get('kind') || 'attendance';
   const rows = (await ctx.env.DB.prepare('SELECT legacy_id,employee_id,data_json FROM legacy_records WHERE kind=? ORDER BY id DESC LIMIT 500').bind(kind).all()).results;
   return json({ records: rows.map((r) => ({ ...JSON.parse(r.data_json), employee_id: r.employee_id })) });
+}
+
+// Who was refused for the network recently, and from which address: so a real office network (or a VPN) is obvious.
+export async function networkRefusals(ctx) {
+  const rules = await getSetting(ctx.env.DB, 'office_ips', []);
+  const rows = (await ctx.env.DB.prepare('SELECT r.ip,r.is_vpn,r.first_at,r.last_at,r.count,e.name FROM network_refusals r JOIN employees e ON e.id=r.employee_id WHERE r.last_at>? ORDER BY r.last_at DESC LIMIT 40').bind(ctx.now - 7 * 86400000).all()).results;
+  const { ipAllowed } = await import('./lib/net.js');
+  return json({ refusals: rows.map((r) => ({ ...r, already_allowed: ipAllowed(r.ip, rules) })) });
 }

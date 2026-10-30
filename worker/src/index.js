@@ -79,6 +79,7 @@ const ROUTES = [
   ['GET', '/api/admin/settings', adm.getSettings, [A]],
   ['GET', '/api/admin/statuses', adm.statusList, [A]],
   ['POST', '/api/admin/settings', adm.putSettings, [A]],
+  ['GET', '/api/admin/network-refusals', adm.networkRefusals, [A]],
   ['GET', '/api/admin/network-exceptions', adm.listNetworkExceptions, [A]],
   ['POST', '/api/admin/network-exceptions', adm.createNetworkException, [A]],
   ['POST', '/api/admin/network-exceptions/:id/revoke', adm.revokeNetworkException, [A]],
@@ -175,6 +176,7 @@ export async function housekeeping(db, now) {
     db.prepare('DELETE FROM sessions WHERE expires_at<?').bind(now),
     db.prepare('DELETE FROM login_attempts WHERE at<?').bind(now - 86400000),
     db.prepare('DELETE FROM idempotency WHERE at_ms<?').bind(now - 14 * 86400000),
+    db.prepare('DELETE FROM network_refusals WHERE last_at<?').bind(now - 30 * 86400000),
   ]);
 }
 

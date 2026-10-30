@@ -8,6 +8,19 @@ import { classify } from './lib/timer.js';
 import { localDate, localMidnightMs, addDays, localMinutes } from './lib/time.js';
 
 export function clientIp(req) { return req.headers.get('cf-connecting-ip') || null; }
+// Cloudflare WARP (a VPN) comes out of Cloudflare's own network. An office never does, so this is never a real office address.
+export const onVpn = (req) => req.cf?.asn === 13335;
+
+// Remembers refused attempts from signed-in, approved computers (bounded: one row per person and address, at most one write a minute).
+async function noteRefusal(ctx, employeeId, ip, vpn) {
+  if (!ip) return;
+  try {
+    const row = await ctx.env.DB.prepare('SELECT last_at FROM network_refusals WHERE employee_id=? AND ip=?').bind(employeeId, ip).first();
+    if (row && ctx.now - row.last_at < 60000) return;
+    await ctx.env.DB.prepare('INSERT INTO network_refusals(employee_id,ip,is_vpn,first_at,last_at,count) VALUES (?,?,?,?,?,1) ON CONFLICT(employee_id,ip) DO UPDATE SET last_at=excluded.last_at,count=count+1,is_vpn=excluded.is_vpn')
+      .bind(employeeId, ip, vpn ? 1 : 0, ctx.now, ctx.now).run();
+  } catch { /* never block the answer because of bookkeeping */ }
+}
 
 // Network must be an approved office address, or an admin-created, time-boxed, audited exception.
 export async function checkNetwork(ctx, employeeId) {
@@ -19,6 +32,9 @@ export async function checkNetwork(ctx, employeeId) {
     .bind(ctx.now, ctx.now, employeeId).first();
   if (ex) return { ok: true, exceptionId: ex.id, ip };
   if (!rules.length) throw new HttpError(403, 'network_not_configured', 'Office network is not set up yet. Ask your admin.');
+  const vpn = onVpn(ctx.req);
+  await noteRefusal(ctx, employeeId, ip, vpn);
+  if (vpn) throw new HttpError(403, 'vpn_detected', 'You are connected through a VPN (Cloudflare WARP). Turn it off, then press the button again.', { vpn: true });
   throw new HttpError(403, 'not_office_network', `You can only check in or out from the office network. The server sees your address as ${ip || 'unknown'}.`);
 }
 
