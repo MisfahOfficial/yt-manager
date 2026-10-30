@@ -47,3 +47,32 @@ Everything below was done on the free tier. The throwaway staging copy used for 
 - **The ClickUp token is powerful** (it can read your workspace). It is stored encrypted; if it leaks, regenerate it in ClickUp.
 - **Not tested:** the ClickUp OAuth button (an API token is used), reading a real shared Google Doc, other people's real laptops and browsers, screen readers, and a professional human penetration test.
 - **Backups are not active until you complete the three-secret setup in BACKUP.md.** Cloudflare keeps only 7 days of history on the free plan.
+
+---
+
+# Round 2 (2026-10-30): team-scale baseline, abuse and integrity audit
+
+Scope: local test instance and automated fixtures only. No paid calls, no live data changed, nothing deployed yet. 158 tests pass (was 135).
+
+## Confirmed findings (reproduced first, then fixed)
+| # | Severity | Finding | Evidence before -> after | Fix (files / functions) |
+|---|---|---|---|---|
+| F1 | High | Reports and rebuilds made one or more database calls per task. At 8 people x 150 tasks a monthly report with comparison needed **7,351 calls / 1.8 s**; Cloudflare Free allows about 1,000 internal calls per request, so the Owner's Reports page and the 6-hourly report job would start failing after a month or two of history | 7,351 -> **263** calls, 1,802 -> **134 ms**; rebuild one person 70 -> 13 calls; rebuild all 8 688 -> 112 | `engine.js` new `loadTasksByIds`, `loadEventsByTask`, `relevantTasks`; `rebuildEmployee`; `reports.js employeeReport` |
+| F2 | Medium | Names used as object keys were not safe. A job or rule named `__proto__` changed `Object.prototype` on the server (`{}.delivered` became `true`, `{}.total` became `NaN`); a ClickUp status named `constructor` classified as a function | reproduced in `test/audit2.test.js` | `lib/timer.js classify` (own keys only); null-prototype dictionaries in `reports.js`/`attendance.js`; `admin.js safeKey` + size caps; `engine.js statusMap`; `scriptcheck.js rulesFor` |
+| F4 | Medium | Importing the old app's data: the page sent everything in one request (fails past 64 KB), different records sharing a date/time silently collapsed (250 sent, 140 kept), and work-log/task/video pieces were rejected as "Nothing to import" (found in the real-browser run) | 250 -> 250 kept; 250 attendance + 120 work logs + 2 people imported through the real Settings box | `admin.js importLegacy`; `web/js/admin.js importBox` (sends pieces of 100; safe to run twice) |
+| F3 | Low (suspected, not reproduced) | Two approvers deciding one correction at the same instant could both apply it | could not trigger it locally | `corrections.js decide`: the request is claimed first; the attendance change and the audit line only happen if this call won |
+| F5 | Low | `//evil.example` passed the link helper | reproduced in test | `web/js/core.js h()` |
+| F6 | Low | Owner settings maps had no size limit | reproduced | `admin.js` caps (200 statuses, 20 jobs, 50 goals, 12 check jobs) |
+| F7 | Low (privacy) | IP addresses were kept forever in attendance rows | reproduced | `index.js housekeeping`: erased after 180 days |
+
+## Checked and clean
+Stored XSS and DOM sinks (no `innerHTML`/`eval` anywhere in the page code), SQL injection (11 entry points x 7 payloads), token leaks (a saved ClickUp token appears in no API answer, audit line or listing; stored encrypted), server-side request forgery (the Google Docs reader only ever contacts `docs.google.com`, whatever a link says; ClickUp calls use fixed hosts and encoded ids), error output (no stack traces), logging (only error stacks, no secrets or personal data), CSV formula injection, duplicate/concurrent clicks, interrupted sync and backup (both resume).
+
+## Workflow and performance
+No screen, shortcut, permission, approval or number changed; all earlier tests pass unchanged. The only visible difference: the old-data import now shows "Importing attendance... 100 of 250" while it works.
+
+## Remaining limits
+- After 5 wrong passwords, a real email gets "too many attempts" while an unknown email keeps getting "wrong password", so an attacker can learn which emails exist. Left as is: fixing it needs a database write per made-up email, which would reopen the free write-quota problem.
+- An unsigned flood of requests still counts toward the free 100,000 requests/day; Cloudflare's own network protection is the only defence.
+- The 1,000-call limit comes from Cloudflare's documentation; it was not provoked on the live service.
+- **These fixes are on GitHub (`dev`) but not deployed**: the live site still runs the previous version until you approve.
